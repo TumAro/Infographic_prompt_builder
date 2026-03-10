@@ -217,7 +217,11 @@ def parse_module(path, syllabus: dict, module_num: int) -> dict:
     # Build lookup tables
     # topic_lookup: norm_name → topic dict (from syllabus)
     topic_lookup: dict = {}
-    # subtopic_lookup: norm_name → (topic_num, canonical_subtopic_name)
+    # subtopic_lookup: norm_name → list of (topic_num, canonical_subtopic_name)
+    # A list is used because multiple topics may share the same subtopic name
+    # (e.g. "Recap and What's Next" in topic 3 and topic 4). At lookup time the
+    # parser prefers the candidate that matches the current topic context, so each
+    # "Recap" paragraph is attributed to the correct topic.
     subtopic_lookup: dict = {}
     # topic_by_num: topic_num → topic dict (for implicit topic creation)
     topic_by_num: dict = {}
@@ -226,12 +230,9 @@ def parse_module(path, syllabus: dict, module_num: int) -> dict:
         topic_lookup[_normalize(topic["name"])] = topic
         topic_by_num[topic["topic_num"]] = topic
         for st_name in topic["subtopics"]:
-            subtopic_lookup[_normalize(st_name)] = (topic["topic_num"], st_name)
-
-    # Fuzzy fallback: list of (word_set, topic_dict) for word-containment matching.
-    # Used when exact match fails and the paragraph contains ALL words of a topic name.
-    # Example: syllabus "Why OOP?" (→ "why oop") matches docx "Why and what is OOP?"
-    topic_word_sets = [(set(k.split()), v) for k, v in topic_lookup.items() if k]
+            subtopic_lookup.setdefault(_normalize(st_name), []).append(
+                (topic["topic_num"], st_name)
+            )
 
     # --- Mutable parsing state (via list cells to allow mutation inside closures) ---
     result_topics: list = []
@@ -246,9 +247,13 @@ def parse_module(path, syllabus: dict, module_num: int) -> dict:
         if state["cur_topic"] is None or not state["cur_blocks"]:
             state["cur_blocks"] = []
             return
-        name = state["cur_st_name"] or state["cur_topic"]["name"]
+        if state["cur_st_name"] is None:
+            # Content before the first subtopic header — discard rather than
+            # create a spurious subtopic named after the topic itself.
+            state["cur_blocks"] = []
+            return
         state["cur_topic"]["subtopics"].append(
-            {"name": name, "blocks": state["cur_blocks"]}
+            {"name": state["cur_st_name"], "blocks": state["cur_blocks"]}
         )
         state["cur_blocks"] = []
 
@@ -292,19 +297,18 @@ def parse_module(path, syllabus: dict, module_num: int) -> dict:
                 _start_topic(topic_lookup[norm]["topic_num"])
 
             elif norm in subtopic_lookup:
-                topic_num, st_name = subtopic_lookup[norm]
+                candidates = subtopic_lookup[norm]
+                cur = state["cur_topic"]["topic_num"] if state["cur_topic"] else None
+                # Prefer the candidate belonging to the current topic so that shared
+                # subtopic names (e.g. "Recap and What's Next" in both topic 3 and 4)
+                # are attributed correctly without switching topics.
+                topic_num, st_name = next(
+                    (c for c in candidates if c[0] == cur), candidates[0]
+                )
                 _start_subtopic(topic_num, st_name)
 
             else:
-                # Fuzzy topic match: all words of a syllabus topic name appear in paragraph.
-                norm_words = set(norm.split())
-                fuzzy = next(
-                    (v for words, v in topic_word_sets if words and words.issubset(norm_words)),
-                    None,
-                )
-                if fuzzy is not None:
-                    _start_topic(fuzzy["topic_num"])
-                elif state["cur_topic"] is not None:
+                if state["cur_topic"] is not None:
                     block_type = _classify_block(text, state["in_story"])
                     if block_type == "story":
                         state["in_story"] = True
@@ -347,7 +351,28 @@ def get_topic_content(module_path, syllabus_path, module_num: int, topic_num: in
     """
     syllabus = parse_syllabus(syllabus_path)
     module = parse_module(module_path, syllabus, module_num)
-    topic = next((t for t in module["topics"] if t["topic_num"] == topic_num), None)
-    if topic is None:
+
+    # Collect ALL instances of this topic — the module docx may have topics appearing
+    # out of linear order (e.g. topic 2 content, then topic 4 overview, then topic 2
+    # resumes). Each re-start creates a separate instance in result_topics; merging
+    # them ensures no subtopics are silently dropped.
+    instances = [t for t in module["topics"] if t["topic_num"] == topic_num]
+    if not instances:
         raise ValueError(f"Topic {topic_num} not found in module {module_num}")
-    return {"topic": topic["name"], "subtopics": topic["subtopics"]}
+
+    merged_subtopics = []
+    for inst in instances:
+        merged_subtopics.extend(inst["subtopics"])
+
+    # Warn about subtopics listed in the syllabus but not found anywhere in the docx.
+    syl_module = next(m for m in syllabus["modules"] if m["module_num"] == module_num)
+    syl_topic = next(t for t in syl_module["topics"] if t["topic_num"] == topic_num)
+    found_names = {s["name"] for s in merged_subtopics}
+    for expected in syl_topic["subtopics"]:
+        if expected not in found_names:
+            print(
+                f"[doc_parser] WARNING: subtopic not found in module docx "
+                f"(grade {syllabus['grade']}, module {module_num}, topic {topic_num}): {expected!r}"
+            )
+
+    return {"topic": instances[0]["name"], "subtopics": merged_subtopics}

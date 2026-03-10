@@ -16,3 +16,7 @@ for mod_num in [5, 6]:
             print(f"  topic_num={t['topic_num']}: {t['name']} ({len(t['subtopics'])} subtopics)")
     except Exception as e:
         print(f"ERROR: {e}")
+
+# Why the @output/grade_7/module_1/topic_2/gist.md and @output/grade_7/module_2/topic_1/gist.md look like Which is not according to @data/grade_7/Class_7.docx . Why this is happening?
+
+# Also I think the doc_parser is not capturing all the subtopics in a topic. For example, the @output/grade_7/module_3/topic_2/gist.md , there are only 4 sub topic but the @data/grade_7/Class_7.docx module 3 topic 2 there are 8 sub topic. So investigate both the problem, garbage LLM outputs and the all subtopic are not captured and give the possible fixes.

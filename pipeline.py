@@ -105,6 +105,7 @@ def run_topic(
     topic: int,
     force_gist: bool = False,
     force_prompt: bool = False,
+    gist_only: bool = False,
 ) -> dict:
     """
     Run the full pipeline for a single topic.
@@ -138,6 +139,10 @@ def run_topic(
 
         gist_text = gist_llm.generate_gist(topic_content, grade, output_path)
 
+        if gist_only:
+            print(f"    [gist-only] skipping prompt generation and resolver")
+            return result
+
         # Step 3: Generate page_N_content.json
         prompt_exists = (output_path / "page_1_content.json").exists()
         if force_prompt and prompt_exists:
@@ -164,31 +169,31 @@ def run_topic(
 # Scope runners
 # ---------------------------------------------------------------------------
 
-def run_module(grade: int, module: int, force_gist: bool, force_prompt: bool) -> list:
+def run_module(grade: int, module: int, force_gist: bool, force_prompt: bool, gist_only: bool = False) -> list:
     topic_nums = _discover_topics(grade, module)
     results = []
     for topic_num in topic_nums:
         print(f"  Topic {topic_num}...")
-        r = run_topic(grade, module, topic_num, force_gist, force_prompt)
+        r = run_topic(grade, module, topic_num, force_gist, force_prompt, gist_only)
         results.append(r)
     return results
 
 
-def run_grade(grade: int, force_gist: bool, force_prompt: bool) -> list:
+def run_grade(grade: int, force_gist: bool, force_prompt: bool, gist_only: bool = False) -> list:
     module_nums = _discover_modules(grade)
     results = []
     for module_num in module_nums:
         print(f"Module {module_num}...")
-        results.extend(run_module(grade, module_num, force_gist, force_prompt))
+        results.extend(run_module(grade, module_num, force_gist, force_prompt, gist_only))
     return results
 
 
-def run_all(force_gist: bool, force_prompt: bool) -> list:
+def run_all(force_gist: bool, force_prompt: bool, gist_only: bool = False) -> list:
     grades = _discover_grades()
     results = []
     for grade in grades:
         print(f"Grade {grade}...")
-        results.extend(run_grade(grade, force_gist, force_prompt))
+        results.extend(run_grade(grade, force_gist, force_prompt, gist_only))
     return results
 
 
@@ -213,6 +218,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Regenerate page_N_content.json even if it already exists",
     )
+    parser.add_argument(
+        "--gist-only",
+        action="store_true",
+        help="Generate only gist.md; skip prompt_llm and resolver",
+    )
     args = parser.parse_args()
 
     if args.topic is not None and args.module is None:
@@ -222,6 +232,7 @@ if __name__ == "__main__":
 
     force_gist = args.force_gist
     force_prompt = args.force_prompt
+    gist_only = args.gist_only
 
     if args.topic is not None:
         topic_content = doc_parser.get_topic_content(
@@ -234,18 +245,18 @@ if __name__ == "__main__":
             f"Grade {args.grade} / Module {args.module} / Topic {args.topic}"
             f" — {topic_content['topic']}"
         )
-        results = [run_topic(args.grade, args.module, args.topic, force_gist, force_prompt)]
+        results = [run_topic(args.grade, args.module, args.topic, force_gist, force_prompt, gist_only)]
 
     elif args.module is not None:
         print(f"Grade {args.grade} / Module {args.module}")
-        results = run_module(args.grade, args.module, force_gist, force_prompt)
+        results = run_module(args.grade, args.module, force_gist, force_prompt, gist_only)
 
     elif args.grade is not None:
         print(f"Grade {args.grade}")
-        results = run_grade(args.grade, force_gist, force_prompt)
+        results = run_grade(args.grade, force_gist, force_prompt, gist_only)
 
     else:
-        results = run_all(force_gist, force_prompt)
+        results = run_all(force_gist, force_prompt, gist_only)
 
     # Summary
     total = len(results)
@@ -258,7 +269,8 @@ if __name__ == "__main__":
     print("SUMMARY")
     print(f"  Topics attempted : {total}")
     print(f"  Topics succeeded : {succeeded}")
-    print(f"  Pages generated  : {total_pages}")
+    if not gist_only:
+        print(f"  Pages generated  : {total_pages}")
     print(f"  Errors           : {len(errors)}")
 
     if errors:

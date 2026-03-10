@@ -24,10 +24,12 @@ def _strip_thinking(text: str) -> str:
 
 
 def _is_valid_gist(text: str) -> bool:
-    """Return True if text contains at least one ## subtopic header and ## Synopsis."""
+    """Return True if text contains at least one ## subtopic header and ## Synopsis,
+    and does not contain template placeholder text echoed from the system prompt."""
     has_subtopic = bool(re.search(r"^##\s+\S", text, re.MULTILINE))
     has_synopsis = bool(re.search(r"^##\s+Synopsis", text, re.MULTILINE | re.IGNORECASE))
-    return has_subtopic and has_synopsis
+    is_template = bool(re.search(r"\[Reproduce|\[One sentence|\[A student", text))
+    return has_subtopic and has_synopsis and not is_template
 
 
 def _load_config() -> dict:
@@ -113,6 +115,7 @@ def generate_gist(topic_content: dict, grade: int, output_path) -> str:
     user_message = _format_user_message(topic_content, grade)
 
     gist_cfg = config["gist_llm"]
+    _ollama_opts = {"options": {"num_ctx": gist_cfg["num_ctx"]}}
     response = litellm.completion(
         model=f"ollama/{gist_cfg['model']}",
         messages=[
@@ -122,6 +125,7 @@ def generate_gist(topic_content: dict, grade: int, output_path) -> str:
         temperature=gist_cfg["temperature"],
         max_tokens=gist_cfg["max_tokens"],
         api_base=config["base_url"],
+        extra_body=_ollama_opts,
     )
     gist_text = _strip_thinking(response.choices[0].message.content)
 
@@ -147,6 +151,7 @@ def generate_gist(topic_content: dict, grade: int, output_path) -> str:
             temperature=gist_cfg["temperature"],
             max_tokens=gist_cfg["max_tokens"],
             api_base=config["base_url"],
+            extra_body=_ollama_opts,
         )
         gist_text = _strip_thinking(response2.choices[0].message.content)
 
@@ -155,6 +160,13 @@ def generate_gist(topic_content: dict, grade: int, output_path) -> str:
             f"gist_llm: model '{gist_cfg['model']}' returned empty output after retry. "
             "The model may be consuming all tokens in <think> blocks. "
             "Try increasing max_tokens or switching to a non-reasoning model in llm_config.json."
+        )
+
+    if not _is_valid_gist(gist_text):
+        raise ValueError(
+            f"gist_llm: model '{gist_cfg['model']}' returned invalid format after retry. "
+            "Output is missing required '## Subtopic' headers or '## Synopsis', or contains "
+            "template placeholder text. Check the model's instruction-following capability."
         )
 
     output_path.mkdir(parents=True, exist_ok=True)

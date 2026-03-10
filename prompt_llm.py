@@ -60,6 +60,12 @@ def _strip_thinking(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
+def _looks_truncated(s: str) -> bool:
+    """True if the raw output appears cut off (no closing brace/bracket at end)."""
+    tail = s.rstrip()
+    return bool(tail) and tail[-1] not in ("}", "]")
+
+
 def _load_style_configs(grade: int) -> tuple:
     """Load global_style.json and grade_N_style.json. Returns (global_cfg, grade_cfg)."""
     global_cfg = json.loads((ROOT / "configs" / "global_style.json").read_text(encoding="utf-8"))
@@ -254,7 +260,7 @@ def generate_content_jsons(
 
     # num_ctx gives qwen3-family thinking models enough context window to finish
     # internal reasoning AND still produce full JSON output.
-    _ollama_opts = {"options": {"num_ctx": 16384}}
+    _ollama_opts = {"options": {"num_ctx": cfg["num_ctx"]}}
 
     response = litellm.completion(
         model=f"ollama/{cfg['model']}",
@@ -274,17 +280,22 @@ def generate_content_jsons(
         except (json.JSONDecodeError, ValueError):
             if attempt == 1:
                 raise
-            retry_messages = messages_so_far + [
-                {"role": "assistant", "content": raw},
-                {
-                    "role": "user",
-                    "content": (
-                        "Your response contained invalid JSON. "
-                        "Output only valid JSON objects separated by --- on its own line. "
-                        "No extra text before the first { or after the last }."
-                    ),
-                },
-            ]
+            if _looks_truncated(raw):
+                # Output was cut off mid-JSON (likely hit max_tokens during thinking).
+                # Start fresh — don't pass the truncated output back; it only wastes context.
+                retry_messages = messages_so_far
+            else:
+                retry_messages = messages_so_far + [
+                    {"role": "assistant", "content": raw},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your response contained invalid JSON. "
+                            "Output only valid JSON objects separated by --- on its own line. "
+                            "No extra text before the first { or after the last }."
+                        ),
+                    },
+                ]
             response2 = litellm.completion(
                 model=f"ollama/{cfg['model']}",
                 messages=retry_messages,
