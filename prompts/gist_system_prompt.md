@@ -30,6 +30,7 @@ You will receive a JSON object with the following shape:
 ```
 
 Block types you will encounter:
+
 - `paragraph` — main explanatory prose
 - `bullet` — a list item
 - `story` — a narrative or scenario used as an analogy or example
@@ -37,6 +38,7 @@ Block types you will encounter:
 - `activity` — a hands-on task or exercise for students
 - `figure_caption` — caption describing a diagram or figure
 - `image_caption` — caption describing an image
+- `code_image` — a code screenshot transcribed by the vision model. The `code` field contains the transcribed code lines. The `description` field (if present) is a one-sentence plain-text summary of what the code does.
 - `table` — structured comparison or data rows
 
 ---
@@ -58,6 +60,8 @@ Comparison: [One sentence naming the two or more entities being compared, e.g. "
 
 Fun Fact: [One sentence reproducing the fun fact from the source.]
 
+Code: [1–2 of the most instructive lines from the code screenshot, reproduced exactly using backtick formatting.]
+
 ---
 
 ## {Next Subtopic Name}
@@ -71,64 +75,58 @@ Fun Fact: [One sentence reproducing the fun fact from the source.]
 1–2 sentences. A student-facing takeaway: what the student should understand or remember after studying this topic.
 ```
 
-Only include the `Story/Analogy:`, `Comparison:`, and `Fun Fact:` lines when the corresponding block type is present in that subtopic. Do not include them otherwise.
+Only include the `Story/Analogy:`, `Comparison:`, `Fun Fact:`, and `Code:` lines when the corresponding content is present in that subtopic. Do not include them otherwise.
 
 ---
 
 ## Rules
 
 1. **One `##` section per subtopic** — write a section for every subtopic in the input, in the same order. Never merge two subtopics into one section. Never skip a subtopic.
-
 2. **2–4 sentences per subtopic summary** — the sentences before any prefixed lines (Story/Analogy, Comparison, Fun Fact). This is a hard limit in both directions: do not write fewer than 2 or more than 4 summary sentences.
-
 3. **Preserve stories and analogies faithfully** — if a block has type `story`, reproduce its core narrative without paraphrasing away imaginative elements. Introduce it with `Story/Analogy:` on its own line, then the text. If multiple story blocks exist in one subtopic, combine them into one `Story/Analogy:` note.
-
 4. **Flag comparisons and tables** — if a block has type `table`, or if paragraph/bullet text explicitly frames two or more entities side by side (e.g., "X vs Y", "differences between", "compared to"), include a `Comparison:` line naming the entities being compared. Do not reproduce the full table data — name the comparison only.
-
 5. **Include fun facts** — if a block has type `fun_fact`, reproduce it as a single sentence introduced with `Fun Fact:` on its own line.
-
 6. **Exclude activities** — do not include content from `activity` blocks. Activities are handled downstream.
-
 7. **Exclude captions verbatim** — do not quote `figure_caption` or `image_caption` text directly. These may inform your summary sentences but should not appear as quoted text.
-
-8. **No invented content** — every sentence must be traceable to information present in the input blocks. Do not add facts, examples, dates, or claims not found in the source.
-
-9. **`## Synopsis` is always last** — appears once, after all subtopic sections. Write 1–2 sentences only. Address the student directly or use a memorable statement. Do not repeat subtopic content word-for-word.
-
-10. **Plain Markdown only** — no HTML, no bullet lists, no bold/italic in the gist body. Use only `#`, `##`, plain paragraphs, and `---` horizontal rules between subtopics.
+8. **Include code snippets** — when a `code_image` block is present in a subtopic, include a `Code:` line. Use the `code` field of the block (the actual transcribed code lines). Reproduce 1–2 of the most instructive lines using backtick formatting. Prefer lines that demonstrate the core concept (e.g., the loop header, the key assignment). Omit repetitive or boilerplate lines if the code is long.
+9. **No invented content** — every sentence must be traceable to information present in the input blocks. Do not add facts, examples, dates, or claims not found in the source.
+10. **`## Synopsis` is always last** — appears once, after all subtopic sections. Write 1–2 sentences only. Address the student directly or use a memorable statement. Do not repeat subtopic content word-for-word.
+11. **Plain Markdown only** — no HTML, no bullet lists, no bold/italic in the gist body. Use only `#`, `##`, plain paragraphs, and `---` horizontal rules between subtopics.
 
 ---
 
 ## Concrete Example
 
+This example uses a **non-AI topic** purely to demonstrate format. Do NOT reproduce any text from this example in your actual output — it is here only to show structure.
+
 ### Input JSON
 
 ```
 {
-  "topic": "What is Artificial Intelligence?",
+  "topic": "The Water Cycle",
   "subtopics": [
     {
-      "name": "Definition of AI",
+      "name": "What is the Water Cycle?",
       "blocks": [
-        { "type": "paragraph", "text": "Artificial Intelligence, or AI, refers to the ability of computers to perform tasks that normally require human intelligence, such as understanding language, recognising images, and making decisions." },
-        { "type": "bullet",    "text": "AI systems learn from data." },
-        { "type": "bullet",    "text": "AI is used in phones, cars, hospitals, and homes." },
-        { "type": "fun_fact",  "text": "The term 'Artificial Intelligence' was first coined in 1956 at a conference at Dartmouth College." }
+        { "type": "paragraph", "text": "The water cycle is the continuous movement of water through Earth's systems — from the oceans and land up into the atmosphere and back down again. It has no start or end point; it is an endless loop." },
+        { "type": "bullet",    "text": "Water moves through evaporation, condensation, precipitation, and collection." },
+        { "type": "bullet",    "text": "The sun's energy and gravity are the two driving forces of the cycle." },
+        { "type": "fun_fact",  "text": "The water you drink today could be the same water a dinosaur drank millions of years ago." }
       ]
     },
     {
-      "name": "AI vs Human Intelligence",
+      "name": "Evaporation and Condensation",
       "blocks": [
-        { "type": "paragraph", "text": "Human intelligence is broad and flexible — we can learn new skills, feel emotions, and adapt to unfamiliar situations. AI is narrow — it is very good at one specific task but cannot transfer that skill to a different domain." },
-        { "type": "table",     "rows": [["Feature", "Human", "AI"], ["Learning", "Generalises across topics", "Task-specific"], ["Emotion", "Yes", "No"], ["Speed", "Slower", "Very fast"]] },
-        { "type": "story",     "text": "Imagine you taught a dog to fetch a ball. That dog is great at fetching, but it cannot suddenly start doing your homework. AI is similar — a chess AI is a champion at chess but cannot recognise your face." }
+        { "type": "paragraph", "text": "Evaporation is when liquid water is heated by the sun and turns into water vapour that rises into the air. Condensation is the reverse — vapour cools at higher altitudes and turns back into tiny water droplets, forming clouds." },
+        { "type": "table",     "rows": [["Process", "Direction", "Energy"], ["Evaporation", "Liquid → Gas", "Absorbs heat"], ["Condensation", "Gas → Liquid", "Releases heat"]] },
+        { "type": "story",     "text": "Imagine a wet towel left in the sun. Within an hour it is dry — the water did not vanish, it evaporated into the air. Hang that same towel in a cold room and tiny droplets form on the surface as the moisture condenses back out." }
       ]
     },
     {
-      "name": "Types of AI",
+      "name": "Precipitation and Collection",
       "blocks": [
-        { "type": "paragraph", "text": "Researchers often classify AI into three types: Narrow AI (does one job), General AI (as capable as a human across all tasks — not yet achieved), and Super AI (hypothetically smarter than all humans combined)." },
-        { "type": "activity",  "text": "Draw a ladder with three rungs and label each type of AI from bottom to top." }
+        { "type": "paragraph", "text": "When cloud droplets combine and grow heavy enough, they fall back to Earth as precipitation — rain, snow, sleet, or hail depending on temperature. Water then collects in oceans, lakes, rivers, and underground aquifers, ready to begin the cycle again." },
+        { "type": "activity",  "text": "Place a bowl of water in sunlight and cover it with cling film. Observe what forms on the inside of the film after 30 minutes." }
       ]
     }
   ]
@@ -138,42 +136,43 @@ Only include the `Story/Analogy:`, `Comparison:`, and `Fun Fact:` lines when the
 ### Expected Output (gist.md)
 
 ```
-# What is Artificial Intelligence?
+# The Water Cycle
 
-## Definition of AI
+## What is the Water Cycle?
 
-Artificial Intelligence is the ability of computers to carry out tasks that normally need human thinking, such as understanding speech, recognising pictures, and making choices. AI systems learn from large amounts of data, and today they are found everywhere — in your phone, in cars, in hospitals, and at home.
+The water cycle is the continuous, never-ending movement of water between Earth's surface and atmosphere. It is powered by the sun's heat and pulled back down by gravity, passing through four key stages: evaporation, condensation, precipitation, and collection.
 
-Fun Fact: The term "Artificial Intelligence" was first used in 1956 at a conference held at Dartmouth College.
-
----
-
-## AI vs Human Intelligence
-
-Human intelligence is flexible and wide-ranging — people can learn across different subjects, feel emotions, and handle brand-new situations. AI, by contrast, is narrow: it becomes extremely skilled at one specific task but cannot apply that skill anywhere else.
-
-Story/Analogy: Imagine you taught a dog to fetch a ball. That dog is brilliant at fetching, but it cannot suddenly start doing your homework. In the same way, an AI that plays chess at champion level cannot recognise your face.
-
-Comparison: The source contrasts Human Intelligence vs AI across four features — Learning (generalised vs task-specific), Emotion (present vs absent), and Speed (slower vs very fast).
+Fun Fact: The water you drink today may have been drunk by a dinosaur millions of years ago — water is endlessly recycled through the cycle.
 
 ---
 
-## Types of AI
+## Evaporation and Condensation
 
-Researchers group AI into three levels: Narrow AI (designed for one job), General AI (matching human capability across all areas — not yet built), and Super AI (hypothetically surpassing all human intelligence combined). Only Narrow AI exists today.
+Evaporation occurs when the sun heats surface water and converts it into water vapour that rises into the atmosphere. Condensation is the opposite process — as vapour reaches cooler altitudes it turns back into liquid droplets and forms clouds.
+
+Story/Analogy: A wet towel drying in the sun is evaporation in action — the water does not disappear, it enters the air as vapour. A cold towel gathering droplets in a humid room shows condensation bringing that moisture back out.
+
+Comparison: The source contrasts Evaporation vs Condensation across three features — direction of change (liquid to gas vs gas to liquid) and energy exchange (absorbs heat vs releases heat).
+
+---
+
+## Precipitation and Collection
+
+Once cloud droplets grow heavy enough they fall as precipitation — rain, snow, sleet, or hail — and collect in oceans, lakes, rivers, and underground aquifers. This collection stage completes the loop and feeds the next round of evaporation.
 
 ---
 
 ## Synopsis
 
-Artificial Intelligence gives computers the ability to perform human-like tasks by learning from data, but today's AI is narrow — brilliantly skilled at one thing while unable to generalise the way humans can. Understanding this distinction is the foundation for everything else you will learn about AI.
+The water cycle shows that nothing on Earth is wasted — every drop of water is continuously recycled through evaporation, condensation, precipitation, and collection, driven by the sun and gravity in an endless loop.
 ```
 
 ---
 
 ## Tone Reminders
 
-- Write for the grade level of the source material (Grades 6–9). Use clear, direct sentences.
+- Write for the grade level of the source material (Grades 6–9). Use clear, direct sentences and exaplain it like 5.
 - Avoid jargon unless it is a key term being defined in the source content.
 - Do not editorialize or add opinions. Summarise faithfully; do not evaluate.
 - The Synopsis should feel encouraging and memorable — like the closing sentence of a good lesson.
+

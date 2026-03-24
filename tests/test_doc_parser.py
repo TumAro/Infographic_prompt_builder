@@ -1,12 +1,18 @@
 """Tests for doc_parser.py using Grade 6 data files."""
 
-import pytest
+import io
+import struct
+import zlib
+import sys
 from pathlib import Path
 
-import sys
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from doc_parser import parse_syllabus, parse_module, get_topic_content
+import doc_parser
+import vision_llm
+from doc_parser import parse_syllabus, write_topic_md
 
 DATA = Path(__file__).parent.parent / "data" / "grade_6"
 SYLLABUS = DATA / "Class_6.docx"
@@ -14,7 +20,65 @@ MODULE_1 = DATA / "Module_1_-_What_is_Artificial_Intelligence.docx"
 
 
 # ---------------------------------------------------------------------------
-# parse_syllabus
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_1px_png() -> bytes:
+    """Return bytes of a valid minimal 1×1 white PNG."""
+    def chunk(ctype: bytes, data: bytes) -> bytes:
+        c = ctype + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+
+    header = b"\x89PNG\r\n\x1a\n"
+    ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+    idat = chunk(b"IDAT", zlib.compress(b"\x00\xff\xff\xff"))
+    iend = chunk(b"IEND", b"")
+    return header + ihdr + idat + iend
+
+
+def _fake_module_with_image(image_bytes: bytes) -> dict:
+    """Return a synthetic _parse_module result that includes one image block."""
+    return {
+        "module_num": 1,
+        "topics": [
+            {
+                "topic_num": 1,
+                "name": "Introduction to Intelligence",
+                "subtopics": [
+                    {
+                        "name": "Human Intelligence vs. Machine Intelligence",
+                        "blocks": [
+                            {"type": "paragraph", "text": "Some content here."},
+                            {"type": "image", "rId": "rId1", "extension": "png"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _fake_syllabus() -> dict:
+    return {
+        "grade": 6,
+        "modules": [
+            {
+                "module_num": 1,
+                "name": "What is Artificial Intelligence",
+                "topics": [
+                    {
+                        "topic_num": 1,
+                        "name": "Introduction to Intelligence",
+                        "subtopics": ["Human Intelligence vs. Machine Intelligence"],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# parse_syllabus — unchanged API, tests kept
 # ---------------------------------------------------------------------------
 
 class TestParseSyllabus:
@@ -68,122 +132,271 @@ class TestParseSyllabus:
 
 
 # ---------------------------------------------------------------------------
-# parse_module
+# write_topic_md — integration tests against real Grade 6 data
 # ---------------------------------------------------------------------------
 
-class TestParseModule:
-    @pytest.fixture(scope="class")
-    def syllabus(self):
-        return parse_syllabus(SYLLABUS)
+class TestWriteTopicMd:
+    """Tests that use real Grade 6 docx files with vision_llm mocked out."""
 
-    @pytest.fixture(scope="class")
-    def module(self, syllabus):
-        return parse_module(MODULE_1, syllabus, 1)
+    @pytest.fixture(autouse=True)
+    def mock_vision(self, monkeypatch):
+        """Prevent any real LLM calls during tests."""
+        monkeypatch.setattr(vision_llm, "describe_image", lambda *a, **kw: "mock image description")
 
-    @pytest.fixture(scope="class")
-    def all_blocks(self, module):
-        return [b for t in module["topics"] for st in t["subtopics"] for b in st["blocks"]]
+    @pytest.fixture
+    def topic_md(self, tmp_path):
+        result = write_topic_md(
+            module_path=MODULE_1,
+            syllabus_path=SYLLABUS,
+            module_num=1,
+            topic_num=1,
+            structured_base=tmp_path / "structured_data",
+            grade=6,
+        )
+        assert result is not None, "write_topic_md should return a Path, not None"
+        return result
 
-    def test_module_num(self, module):
-        assert module["module_num"] == 1
+    def test_creates_file(self, topic_md):
+        assert topic_md.exists()
+        assert topic_md.name == "topic.md"
 
-    def test_topic_count(self, module):
-        assert len(module["topics"]) == 4
+    def test_output_path_structure(self, topic_md):
+        parts = topic_md.parts
+        assert "grade_6" in parts
+        assert "module_1" in parts
+        assert "topic_1" in parts
 
-    def test_topic_1_name(self, module):
-        assert module["topics"][0]["name"] == "Introduction to Intelligence"
-        assert module["topics"][0]["topic_num"] == 1
+    def test_topic_heading(self, topic_md):
+        content = topic_md.read_text(encoding="utf-8")
+        assert "# Topic: Introduction to Intelligence" in content
 
-    def test_topic_2_name(self, module):
-        assert module["topics"][1]["name"] == "The Evolution of AI"
+    def test_subtopic_headings_present(self, topic_md):
+        content = topic_md.read_text(encoding="utf-8")
+        assert "## Subtopic: " in content
 
-    def test_topic_order(self, module):
-        nums = [t["topic_num"] for t in module["topics"]]
-        assert nums == [1, 2, 3, 4]
+    def test_subtopic_name_from_syllabus(self, topic_md):
+        content = topic_md.read_text(encoding="utf-8")
+        assert "## Subtopic: Human Intelligence vs. Machine Intelligence" in content
 
-    def test_each_topic_has_subtopics(self, module):
-        for topic in module["topics"]:
-            assert len(topic["subtopics"]) > 0, f"Topic '{topic['name']}' has no subtopics"
+    def test_markdown_blockquotes(self, topic_md):
+        content = topic_md.read_text(encoding="utf-8")
+        # Topic 1 has stories, fun_facts, and activities — all render as "> ..." blockquotes
+        has_blockquote = any(line.startswith("> ") for line in content.splitlines())
+        assert has_blockquote, "Expected at least one blockquote line (story/fun_fact/activity)"
 
-    def test_blocks_non_empty(self, all_blocks):
-        assert len(all_blocks) > 0
+    def test_markdown_table(self, tmp_path, mock_vision):
+        # Tables exist in topic 3 of module 1 (not topic 1)
+        result = write_topic_md(
+            module_path=MODULE_1,
+            syllabus_path=SYLLABUS,
+            module_num=1,
+            topic_num=3,
+            structured_base=tmp_path / "structured_data",
+            grade=6,
+        )
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        has_table = any(line.startswith("|") for line in content.splitlines())
+        assert has_table, "Expected at least one markdown table row in topic 3"
 
-    def test_paragraph_type_present(self, all_blocks):
-        types = {b["type"] for b in all_blocks}
-        assert "paragraph" in types
+    def test_no_raw_block_type_labels(self, topic_md):
+        content = topic_md.read_text(encoding="utf-8")
+        # The old gist_llm format labels like [paragraph] must NOT appear
+        for label in ("[paragraph]", "[bullet]", "[story]", "[fun_fact]", "[activity]"):
+            assert label not in content, f"Raw block label found in topic.md: {label!r}"
 
-    def test_figure_caption_present(self, all_blocks):
-        types = {b["type"] for b in all_blocks}
-        assert "figure_caption" in types
+    def test_skip_if_exists(self, tmp_path, mock_vision):
+        base = tmp_path / "structured_data"
+        kwargs = dict(module_path=MODULE_1, syllabus_path=SYLLABUS,
+                      module_num=1, topic_num=1, structured_base=base, grade=6)
+        first = write_topic_md(**kwargs)
+        assert first is not None
+        first_mtime = first.stat().st_mtime
 
-    def test_table_type_present(self, all_blocks):
-        types = {b["type"] for b in all_blocks}
-        assert "table" in types
+        # Second call without force → skip
+        second = write_topic_md(**kwargs)
+        assert second is None, "Second call without force should return None"
+        assert first.stat().st_mtime == first_mtime, "File should not be modified"
 
-    def test_table_count(self, all_blocks):
-        tables = [b for b in all_blocks if b["type"] == "table"]
-        assert len(tables) >= 2  # Module 1 has 2 tables
+    def test_force_overwrite(self, tmp_path, mock_vision):
+        base = tmp_path / "structured_data"
+        kwargs = dict(module_path=MODULE_1, syllabus_path=SYLLABUS,
+                      module_num=1, topic_num=1, structured_base=base, grade=6)
+        first = write_topic_md(**kwargs)
+        assert first is not None
+        first_mtime = first.stat().st_mtime
 
-    def test_block_schema_text_blocks(self, all_blocks):
-        for b in all_blocks:
-            assert "type" in b
-            if b["type"] != "table":
-                assert "text" in b, f"Non-table block missing 'text': {b}"
+        # Second call with force=True → file overwritten
+        second = write_topic_md(**kwargs, force=True)
+        assert second is not None
+        assert second.stat().st_mtime >= first_mtime
 
-    def test_block_schema_table_blocks(self, all_blocks):
-        for b in all_blocks:
-            if b["type"] == "table":
-                assert "rows" in b, f"Table block missing 'rows': {b}"
-                assert isinstance(b["rows"], list)
-
-    def test_valid_block_types(self, all_blocks):
-        valid = {"paragraph", "bullet", "story", "fun_fact", "activity",
-                 "figure_caption", "image_caption", "table"}
-        for b in all_blocks:
-            assert b["type"] in valid, f"Unknown block type: {b['type']}"
-
-    def test_missing_module_raises(self, syllabus):
-        with pytest.raises(ValueError):
-            parse_module(MODULE_1, syllabus, 99)
+    def test_invalid_topic_raises(self, tmp_path, mock_vision):
+        with pytest.raises((ValueError, Exception)):
+            write_topic_md(
+                module_path=MODULE_1,
+                syllabus_path=SYLLABUS,
+                module_num=1,
+                topic_num=99,
+                structured_base=tmp_path / "structured_data",
+                grade=6,
+            )
 
 
 # ---------------------------------------------------------------------------
-# get_topic_content
+# write_topic_md — figure block format (fully mocked)
 # ---------------------------------------------------------------------------
 
-class TestGetTopicContent:
-    @pytest.fixture(scope="class")
-    def topic_1(self):
-        return get_topic_content(MODULE_1, SYLLABUS, module_num=1, topic_num=1)
+class TestFigureBlock:
+    """Verifies [Figure N] block output format using fully mocked document data."""
 
-    def test_topic_name(self, topic_1):
-        assert topic_1["topic"] == "Introduction to Intelligence"
+    def test_figure_block_format(self, tmp_path, monkeypatch):
+        image_bytes = _make_1px_png()
 
-    def test_has_subtopics(self, topic_1):
-        assert len(topic_1["subtopics"]) > 0
+        # Mock _parse_module to inject one image block
+        monkeypatch.setattr(
+            doc_parser, "_parse_module",
+            lambda doc, entry: _fake_module_with_image(image_bytes),
+        )
 
-    def test_subtopic_schema(self, topic_1):
-        for st in topic_1["subtopics"]:
-            assert "name" in st
-            assert "blocks" in st
-            assert isinstance(st["blocks"], list)
+        # Mock parse_syllabus
+        monkeypatch.setattr(doc_parser, "parse_syllabus", lambda path: _fake_syllabus())
 
-    def test_topic_2_name(self):
-        result = get_topic_content(MODULE_1, SYLLABUS, module_num=1, topic_num=2)
-        assert result["topic"] == "The Evolution of AI"
+        # Mock Document to expose fake related_parts
+        class _FakePart:
+            blob = image_bytes
 
-    def test_topic_3_name(self):
-        result = get_topic_content(MODULE_1, SYLLABUS, module_num=1, topic_num=3)
-        assert result["topic"] == "Types of AI Around Us"
+        class _FakeRelatedParts:
+            def __contains__(self, key):
+                return True
+            def __getitem__(self, key):
+                return _FakePart()
 
-    def test_topic_4_name(self):
-        result = get_topic_content(MODULE_1, SYLLABUS, module_num=1, topic_num=4)
-        assert "AI" in result["topic"] and "ML" in result["topic"] and "DL" in result["topic"]
+        class _FakeDocPart:
+            related_parts = _FakeRelatedParts()
 
-    def test_nonexistent_topic_raises(self):
-        with pytest.raises(ValueError):
-            get_topic_content(MODULE_1, SYLLABUS, module_num=1, topic_num=99)
+        class _FakeDoc:
+            part = _FakeDocPart()
 
-    def test_subtopics_have_blocks(self, topic_1):
-        for st in topic_1["subtopics"]:
-            assert len(st["blocks"]) > 0, f"Subtopic '{st['name']}' has no blocks"
+        monkeypatch.setattr(doc_parser, "Document", lambda path: _FakeDoc())
+
+        # Mock vision_llm
+        monkeypatch.setattr(vision_llm, "describe_image", lambda *a, **kw: "test description")
+
+        result = write_topic_md(
+            module_path="fake.docx",
+            syllabus_path="fake_syllabus.docx",
+            module_num=1,
+            topic_num=1,
+            structured_base=tmp_path / "structured_data",
+            grade=6,
+        )
+
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        assert "> **[Figure 1]** test description" in content
+
+    def test_figure_caption_included(self, tmp_path, monkeypatch):
+        image_bytes = _make_1px_png()
+
+        # Image block followed by a caption block
+        fake_module = {
+            "module_num": 1,
+            "topics": [
+                {
+                    "topic_num": 1,
+                    "name": "Introduction to Intelligence",
+                    "subtopics": [
+                        {
+                            "name": "Human Intelligence vs. Machine Intelligence",
+                            "blocks": [
+                                {"type": "image", "rId": "rId1", "extension": "png"},
+                                {"type": "figure_caption", "text": "Figure 1 Comparison chart"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        monkeypatch.setattr(doc_parser, "_parse_module", lambda doc, entry: fake_module)
+        monkeypatch.setattr(doc_parser, "parse_syllabus", lambda path: _fake_syllabus())
+
+        class _FakePart:
+            blob = image_bytes
+
+        class _FakeRelatedParts:
+            def __contains__(self, key): return True
+            def __getitem__(self, key): return _FakePart()
+
+        class _FakeDoc:
+            class part:
+                related_parts = _FakeRelatedParts()
+
+        monkeypatch.setattr(doc_parser, "Document", lambda path: _FakeDoc())
+        monkeypatch.setattr(vision_llm, "describe_image", lambda *a, **kw: "test description")
+
+        result = write_topic_md(
+            module_path="fake.docx",
+            syllabus_path="fake_syllabus.docx",
+            module_num=1,
+            topic_num=1,
+            structured_base=tmp_path / "structured_data",
+            grade=6,
+        )
+
+        content = result.read_text(encoding="utf-8")
+        assert "> **[Figure 1]** test description" in content
+        assert "*Caption: Figure 1 Comparison chart*" in content
+
+    def test_figure_counter_increments(self, tmp_path, monkeypatch):
+        image_bytes = _make_1px_png()
+
+        fake_module = {
+            "module_num": 1,
+            "topics": [
+                {
+                    "topic_num": 1,
+                    "name": "Introduction to Intelligence",
+                    "subtopics": [
+                        {
+                            "name": "Human Intelligence vs. Machine Intelligence",
+                            "blocks": [
+                                {"type": "image", "rId": "rId1", "extension": "png"},
+                                {"type": "image", "rId": "rId2", "extension": "png"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        monkeypatch.setattr(doc_parser, "_parse_module", lambda doc, entry: fake_module)
+        monkeypatch.setattr(doc_parser, "parse_syllabus", lambda path: _fake_syllabus())
+
+        class _FakePart:
+            blob = image_bytes
+
+        class _FakeRelatedParts:
+            def __contains__(self, key): return True
+            def __getitem__(self, key): return _FakePart()
+
+        class _FakeDoc:
+            class part:
+                related_parts = _FakeRelatedParts()
+
+        monkeypatch.setattr(doc_parser, "Document", lambda path: _FakeDoc())
+        monkeypatch.setattr(vision_llm, "describe_image", lambda *a, **kw: "desc")
+
+        result = write_topic_md(
+            module_path="fake.docx",
+            syllabus_path="fake_syllabus.docx",
+            module_num=1,
+            topic_num=1,
+            structured_base=tmp_path / "structured_data",
+            grade=6,
+        )
+
+        content = result.read_text(encoding="utf-8")
+        assert "> **[Figure 1]** desc" in content
+        assert "> **[Figure 2]** desc" in content

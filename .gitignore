@@ -1,5 +1,6 @@
 data/*
 output/*
+structured_data/*
 .pytest_cache
 __pycache__
 

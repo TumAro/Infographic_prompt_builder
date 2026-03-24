@@ -34,18 +34,55 @@ Prefixed lines (`Story/Analogy:`, `Comparison:`, `Fun Fact:`) are only present w
 
 ## Page Count Decision Rules
 
-Default to ONE page. Use TO pages only if ANY of the following is true:
+Default to ONE page. Minimum is 1 page per topic; maximum is 5 pages.
 
-- The gist has 5 or more distinct subtopic sections.
-- The gist contains a `Comparison:` note that describes a full side-by-side contrast between two systems or concepts — substantial enough to fill a dedicated comparison visual.
-- The synopsis clearly describes two separable ideas that each warrant independent visual treatment.
+Determine page count by evaluating two independent signals from the gist:
 
-If two pages are warranted:
+### Signal 1 — Subtopic Count
 
-- Page 1: foundational concept or first half of subtopics.
-- Page 2: extended content, the comparison, or advanced subtopics.
+Count the distinct subtopic sections in the gist:
 
-Maximum 2 pages per topic.
+- 1–3 subtopics → lean toward 1 page
+- 4–5 subtopics → lean toward 2 pages
+- 6–7 subtopics → lean toward 3 pages
+- 8+ subtopics → lean toward 4–5 pages
+
+### Signal 2 — Topic Complexity
+
+Judge how inherently complex the topic is, independent of subtopic count.
+A topic is **high complexity** if it meets one or more of the following:
+
+- It involves multiple interacting systems or mechanisms (e.g., backpropagation, outlier handling, gradient descent)
+- The gist contains multiple `Comparison:` notes, several `Story/Analogy:` blocks, or dense technical body text
+- The synopsis describes layered or prerequisite-heavy concepts that require sequential scaffolding
+- The topic is typically taught at a level beyond the target grade (e.g., "Handling Outliers" is more advanced than "What is Machine Learning?")
+
+A topic is **low complexity** if the core idea can be grasped in one or two clear visuals (e.g., "What is AI?", "What is a Dataset?").
+
+### Combining the Signals (OR Logic)
+
+Either signal alone can justify more pages. When both signals are elevated, push the page count higher than either would suggest individually:
+
+| Subtopic Count | Complexity  | Suggested Pages |
+| -------------- | ----------- | --------------- |
+| Low (1–3)      | Low         | 1               |
+| Low (1–3)      | High        | 2–3             |
+| Medium (4–5)   | Low         | 2               |
+| Medium (4–5)   | High        | 3–4             |
+| High (6+)      | Low         | 3               |
+| High (6+)      | High        | 4–5             |
+
+These are guidelines, not hard rules. Use your judgment — if a topic is concise despite many subtopics, fewer pages may be correct.
+
+### Content Split Across Pages
+
+Decide how to divide content based on the topic's natural structure. Reasonable groupings include:
+
+- Foundational concepts first, advanced or applied concepts later
+- Sequential steps in a process, one phase per page
+- Conceptual clusters (e.g., definitions → comparisons → examples/applications)
+
+You choose the split — there is no fixed rule for which subtopics go on which page.
 
 ---
 
@@ -293,7 +330,7 @@ Before writing your final JSON, verify each item:
 - Every section has `heading`, `body`, and `visual_hint`.
 - `title` is 6 words or fewer; `subtitle` is 12 words or fewer; each `heading` is 5 words or fewer.
 - `callout` is included only if the gist explicitly had a `Fun Fact:`, `Story/Analogy:`, or activity line.
-- Page count matches the decision rules: 1 page unless 5+ subtopics or an explicit standalone comparison.
+- Page count is between 1 and 5, justified by subtopic count, topic complexity, or both per the decision rules.
 - Multi-page output uses a bare `---` separator with no surrounding text or array wrapper.
 - JSON is valid: all strings are quoted, all arrays and objects are properly opened and closed, no trailing commas.
 

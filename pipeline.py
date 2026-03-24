@@ -1,14 +1,28 @@
 """
 pipeline.py — CLI orchestrator for the AI Infographic Picture Book Generator.
 
-Usage:
-    python pipeline.py                                    # all grades
-    python pipeline.py --grade 6                          # all modules in grade
-    python pipeline.py --grade 6 --module 1               # all topics in module
-    python pipeline.py --grade 6 --module 1 --topic 2     # single topic
+Two-phase pipeline:
+    Phase 1 (parse):    doc_parser → structured_data/grade_N/module_N/topic_N/topic.md
+    Phase 2 (generate): md_parser  → gist_llm → prompt_llm → resolver
 
-Skip logic:
-    - gist.md exists             → skip gist_llm  (override: --force-gist)
+Usage:
+    # Parse phase only (build structured_data/)
+    python pipeline.py --parse-raw
+    python pipeline.py --parse-raw --grade 6 --module 1 --topic 1
+    python pipeline.py --parse-raw --force-parse   # overwrite existing topic.md files
+
+    # Generate phase (structured_data/ must already exist)
+    python pipeline.py --grade 6 --module 1 --topic 1
+    python pipeline.py --grade 6 --module 1
+    python pipeline.py --grade 6
+    python pipeline.py                              # all grades
+
+    # Re-resolve after config edits (no LLM)
+    python resolver.py --grade 6 --module 1 --topic 2
+
+Skip logic (generate mode):
+    - topic.md missing        → error (run --parse-raw first)
+    - gist.md exists          → skip gist_llm  (override: --force-gist)
     - page_N_content.json exists → skip prompt_llm (override: --force-prompt)
     - resolver always runs
 """
@@ -20,12 +34,14 @@ from pathlib import Path
 
 import doc_parser
 import gist_llm
+import md_parser
 import prompt_llm
 import resolver
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
 OUTPUT_DIR = ROOT / "output"
+STRUCTURED_DIR = ROOT / "structured_data"
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +77,7 @@ def _discover_grades() -> list:
 
 def _discover_modules(grade: int) -> list:
     grade_dir = DATA_DIR / f"grade_{grade}"
-    modules = set()
+    modules: set[int] = set()
     for f in grade_dir.glob("Module_*.docx"):
         m = re.match(r"Module_(\d+)_", f.name)
         if m:
@@ -106,27 +122,63 @@ def run_topic(
     force_gist: bool = False,
     force_prompt: bool = False,
     gist_only: bool = False,
+    parse_raw: bool = False,
+    force_parse: bool = False,
 ) -> dict:
     """
-    Run the full pipeline for a single topic.
+    Run the pipeline for a single topic.
+
+    In parse_raw mode: writes structured_data/grade_N/module_N/topic_N/topic.md
+    In generate mode:  reads from structured_data/ and runs gist_llm → prompt_llm → resolver
 
     Returns:
-        {"grade": N, "module": M, "topic": T, "pages": N, "error": None | str}
+        {
+            "grade": N, "module": M, "topic": T,
+            "pages": N,       # 0 in parse_raw mode
+            "skipped": bool,  # True if topic.md/gist.md already existed and was reused
+            "error": None | str
+        }
     """
-    result = {"grade": grade, "module": module, "topic": topic, "pages": 0, "error": None}
+    result: dict = {
+        "grade": grade, "module": module, "topic": topic,
+        "pages": 0, "skipped": False, "error": None,
+    }
 
     try:
-        syllabus_path = _find_syllabus(grade)
-        module_path = _find_module_file(grade, module)
+        # ------------------------------------------------------------------
+        # PARSE PHASE
+        # ------------------------------------------------------------------
+        if parse_raw:
+            syllabus_path = _find_syllabus(grade)
+            module_path = _find_module_file(grade, module)
+            out = doc_parser.write_topic_md(
+                module_path=module_path,
+                syllabus_path=syllabus_path,
+                module_num=module,
+                topic_num=topic,
+                structured_base=STRUCTURED_DIR,
+                grade=grade,
+                force=force_parse,
+            )
+            if out is None:
+                print(f"    [skip] topic.md already exists")
+                result["skipped"] = True
+            else:
+                print(f"    -> written: {out.relative_to(ROOT)}")
+            return result
+
+        # ------------------------------------------------------------------
+        # GENERATE PHASE
+        # ------------------------------------------------------------------
         output_path = OUTPUT_DIR / f"grade_{grade}" / f"module_{module}" / f"topic_{topic}"
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Step 1: Parse topic content
-        topic_content = doc_parser.get_topic_content(
-            module_path=module_path,
-            syllabus_path=syllabus_path,
+        # Step 1: Read topic content from structured_data/
+        topic_content = md_parser.get_topic_content_from_md(
+            grade=grade,
             module_num=module,
             topic_num=topic,
+            structured_base=STRUCTURED_DIR,
         )
 
         # Step 2: Generate gist.md
@@ -169,31 +221,60 @@ def run_topic(
 # Scope runners
 # ---------------------------------------------------------------------------
 
-def run_module(grade: int, module: int, force_gist: bool, force_prompt: bool, gist_only: bool = False) -> list:
+def run_module(
+    grade: int,
+    module: int,
+    force_gist: bool,
+    force_prompt: bool,
+    gist_only: bool = False,
+    parse_raw: bool = False,
+    force_parse: bool = False,
+) -> list:
     topic_nums = _discover_topics(grade, module)
     results = []
     for topic_num in topic_nums:
         print(f"  Topic {topic_num}...")
-        r = run_topic(grade, module, topic_num, force_gist, force_prompt, gist_only)
+        r = run_topic(
+            grade, module, topic_num,
+            force_gist, force_prompt, gist_only,
+            parse_raw, force_parse,
+        )
         results.append(r)
     return results
 
 
-def run_grade(grade: int, force_gist: bool, force_prompt: bool, gist_only: bool = False) -> list:
+def run_grade(
+    grade: int,
+    force_gist: bool,
+    force_prompt: bool,
+    gist_only: bool = False,
+    parse_raw: bool = False,
+    force_parse: bool = False,
+) -> list:
     module_nums = _discover_modules(grade)
     results = []
     for module_num in module_nums:
         print(f"Module {module_num}...")
-        results.extend(run_module(grade, module_num, force_gist, force_prompt, gist_only))
+        results.extend(
+            run_module(grade, module_num, force_gist, force_prompt, gist_only, parse_raw, force_parse)
+        )
     return results
 
 
-def run_all(force_gist: bool, force_prompt: bool, gist_only: bool = False) -> list:
+def run_all(
+    force_gist: bool,
+    force_prompt: bool,
+    gist_only: bool = False,
+    parse_raw: bool = False,
+    force_parse: bool = False,
+) -> list:
     grades = _discover_grades()
     results = []
     for grade in grades:
         print(f"Grade {grade}...")
-        results.extend(run_grade(grade, force_gist, force_prompt, gist_only))
+        results.extend(
+            run_grade(grade, force_gist, force_prompt, gist_only, parse_raw, force_parse)
+        )
     return results
 
 
@@ -208,6 +289,16 @@ if __name__ == "__main__":
     parser.add_argument("--grade", type=int, help="Grade number (e.g. 6)")
     parser.add_argument("--module", type=int, help="Module number (1-indexed)")
     parser.add_argument("--topic", type=int, help="Topic number (1-indexed)")
+    parser.add_argument(
+        "--parse-raw",
+        action="store_true",
+        help="Run only the doc_parser phase (build structured_data/), then stop",
+    )
+    parser.add_argument(
+        "--force-parse",
+        action="store_true",
+        help="Overwrite existing topic.md files during --parse-raw",
+    )
     parser.add_argument(
         "--force-gist",
         action="store_true",
@@ -230,46 +321,76 @@ if __name__ == "__main__":
     if args.module is not None and args.grade is None:
         parser.error("--module requires --grade")
 
+    parse_raw = args.parse_raw
+    force_parse = args.force_parse
     force_gist = args.force_gist
     force_prompt = args.force_prompt
     gist_only = args.gist_only
 
+    mode_label = "PARSE" if parse_raw else "GENERATE"
+
     if args.topic is not None:
-        topic_content = doc_parser.get_topic_content(
-            module_path=_find_module_file(args.grade, args.module),
-            syllabus_path=_find_syllabus(args.grade),
-            module_num=args.module,
-            topic_num=args.topic,
-        )
+        # Print topic name from syllabus (no full parse required)
+        try:
+            syllabus = doc_parser.parse_syllabus(_find_syllabus(args.grade))
+            mod_entry = next(
+                (m for m in syllabus["modules"] if m["module_num"] == args.module), None
+            )
+            topic_name = ""
+            if mod_entry:
+                t_entry = next(
+                    (t for t in mod_entry["topics"] if t["topic_num"] == args.topic), None
+                )
+                if t_entry:
+                    topic_name = f" — {t_entry['name']}"
+        except Exception:
+            topic_name = ""
+
         print(
-            f"Grade {args.grade} / Module {args.module} / Topic {args.topic}"
-            f" — {topic_content['topic']}"
+            f"[{mode_label}] Grade {args.grade} / Module {args.module}"
+            f" / Topic {args.topic}{topic_name}"
         )
-        results = [run_topic(args.grade, args.module, args.topic, force_gist, force_prompt, gist_only)]
+        results = [
+            run_topic(
+                args.grade, args.module, args.topic,
+                force_gist, force_prompt, gist_only,
+                parse_raw, force_parse,
+            )
+        ]
 
     elif args.module is not None:
-        print(f"Grade {args.grade} / Module {args.module}")
-        results = run_module(args.grade, args.module, force_gist, force_prompt, gist_only)
+        print(f"[{mode_label}] Grade {args.grade} / Module {args.module}")
+        results = run_module(
+            args.grade, args.module,
+            force_gist, force_prompt, gist_only,
+            parse_raw, force_parse,
+        )
 
     elif args.grade is not None:
-        print(f"Grade {args.grade}")
-        results = run_grade(args.grade, force_gist, force_prompt, gist_only)
+        print(f"[{mode_label}] Grade {args.grade}")
+        results = run_grade(
+            args.grade, force_gist, force_prompt, gist_only, parse_raw, force_parse
+        )
 
     else:
-        results = run_all(force_gist, force_prompt, gist_only)
+        print(f"[{mode_label}] All grades")
+        results = run_all(force_gist, force_prompt, gist_only, parse_raw, force_parse)
 
     # Summary
     total = len(results)
     succeeded = sum(1 for r in results if r["error"] is None)
+    skipped = sum(1 for r in results if r.get("skipped"))
     total_pages = sum(r["pages"] for r in results)
     errors = [r for r in results if r["error"] is not None]
 
     print()
     print("=" * 60)
     print("SUMMARY")
+    print(f"  Mode             : {'parse-raw' if parse_raw else 'generate'}")
     print(f"  Topics attempted : {total}")
     print(f"  Topics succeeded : {succeeded}")
-    if not gist_only:
+    print(f"  Topics skipped   : {skipped}")
+    if not parse_raw and not gist_only:
         print(f"  Pages generated  : {total_pages}")
     print(f"  Errors           : {len(errors)}")
 
