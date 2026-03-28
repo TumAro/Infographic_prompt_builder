@@ -34,55 +34,36 @@ Prefixed lines (`Story/Analogy:`, `Comparison:`, `Fun Fact:`) are only present w
 
 ## Page Count Decision Rules
 
-Default to ONE page. Minimum is 1 page per topic; maximum is 5 pages.
+Default to ONE page. Minimum is 1 page; maximum is the total number of subtopic sections in the gist (e.g. a gist with 7 subtopics has a maximum of 7 pages).
 
-Determine page count by evaluating two independent signals from the gist:
+### How to decide page count
 
-### Signal 1 — Subtopic Count
+Evaluate **each subtopic** in the gist individually for complexity. A subtopic is **high complexity** if it meets one or more of the following:
 
-Count the distinct subtopic sections in the gist:
+- It describes a multi-step mechanism or interacting system (e.g. backpropagation, gradient descent)
+- It contains a `Comparison:` note AND a `Story/Analogy:` block, requiring both a visual contrast and a narrative
+- The body text is dense with technical terms that need sequential scaffolding to understand
+- The concept is typically taught at a level beyond the target grade
 
-- 1–3 subtopics → lean toward 1 page
-- 4–5 subtopics → lean toward 2 pages
-- 6–7 subtopics → lean toward 3 pages
-- 8+ subtopics → lean toward 4–5 pages
+A subtopic is **low complexity** if its core idea can be grasped from one clear visual.
 
-### Signal 2 — Topic Complexity
+### Assigning subtopics to pages
 
-Judge how inherently complex the topic is, independent of subtopic count.
-A topic is **high complexity** if it meets one or more of the following:
+- Each **high-complexity** subtopic gets its **own dedicated page**
+- **Low-complexity** subtopics are **grouped** together onto shared pages; group them by conceptual proximity (e.g. definitions together, examples together)
+- A page may contain 1–5 sections; a single high-complexity subtopic that generates rich content may use all 5 sections on its own page
 
-- It involves multiple interacting systems or mechanisms (e.g., backpropagation, outlier handling, gradient descent)
-- The gist contains multiple `Comparison:` notes, several `Story/Analogy:` blocks, or dense technical body text
-- The synopsis describes layered or prerequisite-heavy concepts that require sequential scaffolding
-- The topic is typically taught at a level beyond the target grade (e.g., "Handling Outliers" is more advanced than "What is Machine Learning?")
+### Worked example
 
-A topic is **low complexity** if the core idea can be grasped in one or two clear visuals (e.g., "What is AI?", "What is a Dataset?").
-
-### Combining the Signals (OR Logic)
-
-Either signal alone can justify more pages. When both signals are elevated, push the page count higher than either would suggest individually:
-
-| Subtopic Count | Complexity  | Suggested Pages |
-| -------------- | ----------- | --------------- |
-| Low (1–3)      | Low         | 1               |
-| Low (1–3)      | High        | 2–3             |
-| Medium (4–5)   | Low         | 2               |
-| Medium (4–5)   | High        | 3–4             |
-| High (6+)      | Low         | 3               |
-| High (6+)      | High        | 4–5             |
-
-These are guidelines, not hard rules. Use your judgment — if a topic is concise despite many subtopics, fewer pages may be correct.
+A gist with 7 subtopics: 3 high-complexity + 4 low-complexity → 3 dedicated pages + grouped low-complexity pages (e.g. 2 low + 2 low) = 5 pages total. Maximum for this topic is 7 (= subtopic count); result 5 is within bounds.
 
 ### Content Split Across Pages
 
-Decide how to divide content based on the topic's natural structure. Reasonable groupings include:
+Split is determined by the per-subtopic complexity evaluation above:
 
-- Foundational concepts first, advanced or applied concepts later
-- Sequential steps in a process, one phase per page
-- Conceptual clusters (e.g., definitions → comparisons → examples/applications)
-
-You choose the split — there is no fixed rule for which subtopics go on which page.
+- High-complexity subtopics anchor their own page; choose the layout type that best serves that subtopic's content
+- Low-complexity subtopics are grouped; choose a layout type that works across the grouped set (e.g. `multi_column` for parallel definitions)
+- Maintain a logical reading order: foundational or definitional subtopics first, applied or advanced subtopics later
 
 ---
 
@@ -99,6 +80,20 @@ Choose exactly one `layout_type` per page from this fixed list:
 | `process_flow`           | Content describes a sequence of ordered steps or a pipeline                     |
 | `analogy_anchor`         | Gist has a `Story/Analogy:` that is the central teaching device for the concept |
 
+
+---
+
+## Layout Spatial Templates for `image_prompt`
+
+Use these canvas grid descriptions when writing `image_prompt`. Describe the grid in natural language — adapt proportions to the number of sections.
+
+| `layout_type` | Canvas description for `image_prompt` |
+| --- | --- |
+| `concept_intro` | Central focus zone occupying ~65% of the canvas (heading + body placeholder); remainder reserved for a callout box at the bottom if present, or left as margin. |
+| `two_section_comparison` | Two equal panels side by side divided by a vertical centre line; each panel has a heading zone at the top and a body text placeholder below. Callout box spans full width below both panels if present. |
+| `multi_column` | N equal vertical columns (one per section) spanning the main canvas area; each column has a heading zone at the top and a body text placeholder below. Callout box spans full width at the bottom if present. |
+| `process_flow` | N equal horizontal bands stacked top-to-bottom (one per step); each band has a step heading zone on the left and a body text placeholder on the right. A small connecting arrow divides each band from the next. Callout box at the bottom or side if present. |
+| `analogy_anchor` | Top half: real-world analogy zone (heading + body placeholder). A visual bridge divider (arrow or line) at the midpoint. Bottom half: AI concept zone (heading + body placeholder). Callout box below if present. |
 
 ---
 
@@ -168,7 +163,7 @@ Each page must be a single valid JSON object. Every REQUIRED field must be prese
     "text": "The term 'Artificial Intelligence' was coined in 1956 at Dartmouth College."
   },
 
-  "image_prompt": "A {{global.layout_language}} infographic page in {{global.illustration_style}} style with a {{grade.mood}} tone, rendered at {{global.aspect_ratio}} aspect ratio using {{global.font_style}} typography on a {{grade.background_color}} background. Primary colour {{grade.primary_color}} for headings; {{grade.accent_color}} for callout highlights. Complexity: {{grade.complexity_level}}. Title: 'What is AI?' Subtitle: 'Machines that learn, think, and help'. Section 'What AI Can Do': a cartoon robot holding a lightbulb surrounded by a microphone icon, a globe icon, and a play button icon; body explains AI learns from data to recognise speech, translate languages, and recommend videos. Fun fact callout box: the term AI was coined in 1956 at Dartmouth College."
+  "image_prompt": "A {{global.layout_language}} infographic canvas in {{global.illustration_style}} style with a {{grade.mood}} tone, rendered at {{global.aspect_ratio}} aspect ratio using {{global.font_style}} typography on a {{grade.background_color}} background. Primary colour {{grade.primary_color}} for section headings and structural dividers; {{grade.accent_color}} for the callout box border. Complexity: {{grade.complexity_level}}. Layout: single central focus zone occupying the top 65% of the canvas with a heading placeholder and a body text area below it. Reserve the bottom 35% for a highlighted callout box spanning full width with a heading placeholder and body text area inside."
 }
 ```
 
@@ -194,16 +189,17 @@ Each page must be a single valid JSON object. Every REQUIRED field must be prese
 
 `**callout**` — OPTIONAL. Include only when the gist explicitly contains a `Fun Fact:`, `Story/Analogy:`, or activity entry. Object with:
 
-- `type` — REQUIRED if callout present. One of: `fun_fact`, `story`, `activity`. Match the source: use `fun_fact` for `Fun Fact:` entries, `story` for `Story/Analogy:` entries, `activity` for activity content.
+- `type` — REQUIRED if callout present. One of: `fun_fact`, `story`, `activity`. Match the source: use `fun_fact` for `Fun Fact:` entries, `story` for `Story/Analogy:` entries, `activity` for activity content. A `Comparison:` note in the gist is **not** a callout source — it informs layout selection (`two_section_comparison`) only. Do not create a callout for a `Comparison:` note.
 - `text` — REQUIRED if callout present. String. Reproduce faithfully from the gist.
 
-`**image_prompt**` — REQUIRED. String. A single, complete natural-language image generation prompt for Gemini. It must:
+`**image_prompt**` — REQUIRED. String. A canvas layout and style instruction for Nano Banana image generation. It must:
 
 - Embed all 9 style tokens inline, in the exact `{{namespace.key}}` format.
-- Incorporate the title and subtitle.
-- Describe each section's `visual_hint` inline by heading name.
-- Describe the callout inline if one is present.
-- Read as a single coherent paragraph that a visual AI can act on directly.
+- Describe how to divide the canvas spatially based on `layout_type` (e.g. N equal horizontal bands for a process flow; 2 side-by-side panels for a comparison; N equal vertical columns for multi-column).
+- Specify which colour token applies to heading areas and which to callout boxes.
+- Indicate where to leave text placeholder zones for headings, body copy, and callout text.
+- **NOT include** section body text, `visual_hint` descriptions, callout text, title, or subtitle — those live only in the structured fields and are overlaid separately.
+- Read as a single coherent paragraph that a visual AI can use to generate a styled, empty canvas grid.
 
 ---
 
@@ -211,14 +207,15 @@ Each page must be a single valid JSON object. Every REQUIRED field must be prese
 
 1. All `body` text must be drawn directly from the gist. Do not invent new facts, dates, names, or explanations.
 2. `visual_hint` descriptions must be concrete and specific: name the subject, describe its action, list key surrounding elements. Avoid abstract instructions like "show the concept visually" or "illustrate this idea."
-3. The `image_prompt` must contain all 9 style tokens literally — copy `{{global.illustration_style}}` etc. exactly. Any missing token will cause the resolver to fail.
+3. The `image_prompt` must contain all 9 style tokens literally — copy `{{global.illustration_style}}` etc. exactly. Any missing token will cause the resolver to fail. The `image_prompt` describes canvas layout and style only — do not embed section body text, `visual_hint` descriptions, callout text, title, or subtitle.
 4. `title` ≤ 6 words. `subtitle` ≤ 12 words. Each `heading` ≤ 5 words. These are hard limits.
 5. Section `body` text must be 1–3 sentences. Do not write paragraphs.
 6. Include `callout` only when the gist has a `Fun Fact:`, `Story/Analogy:`, or activity line. Do not add a callout if the gist has none.
 7. Match `callout.type` to the source: `fun_fact` for `Fun Fact:` entries, `story` for `Story/Analogy:` entries, `activity` for activity content.
-8. For `two_section_comparison` layout, use exactly 2 sections — one per side of the comparison.
-9. For `process_flow` layout, sections represent sequential steps; number headings naturally, e.g., "Step 1: Collect Data".
-10. For `analogy_anchor` layout, the first section should introduce the real-world analogy, the second section maps it to the AI concept.
+8. Never use `"comparison"` or any other value not in `{fun_fact, story, activity}` as `callout.type`. A `Comparison:` note in the gist belongs in the layout choice, not the callout.
+9. For `two_section_comparison` layout, use exactly 2 sections — one per side of the comparison.
+10. For `process_flow` layout, sections represent sequential steps; number headings naturally, e.g., "Step 1: Collect Data".
+11. For `analogy_anchor` layout, the first section should introduce the real-world analogy, the second section maps it to the AI concept.
 
 ---
 
@@ -272,7 +269,7 @@ Artificial Intelligence gives computers the ability to perform human-like tasks 
 
 ### Decision
 
-3 subtopic sections — below the 5-subtopic threshold. The `Comparison:` note is one subtopic among three, not a standalone comparison topic. Single page is appropriate. The three subtopics map naturally to three columns (definition, human-vs-AI, types), so `multi_column` is the right layout. The `Story/Analogy:` becomes the callout.
+3 subtopic sections → maximum 3 pages. Evaluating each subtopic: "Definition of AI" is low complexity (one clear concept), "AI vs Human Intelligence" is low-to-medium complexity (comparison + analogy but straightforward), "Types of AI" is low complexity (simple classification). No subtopic is high enough complexity to demand a dedicated page. All three are grouped onto a single page. The three subtopics map naturally to three columns (definition, human-vs-AI, types), so `multi_column` is the right layout. The `Story/Analogy:` becomes the callout.
 
 ### Expected Output (page_1_content.json)
 
@@ -315,7 +312,7 @@ Artificial Intelligence gives computers the ability to perform human-like tasks 
     "type": "story",
     "text": "Imagine you taught a dog to fetch a ball. That dog is brilliant at fetching, but it cannot suddenly start doing your homework. An AI chess champion is the same — it cannot recognise your face."
   },
-  "image_prompt": "A {{global.layout_language}} infographic page in {{global.illustration_style}} style with a {{grade.mood}} tone, rendered at {{global.aspect_ratio}} aspect ratio using {{global.font_style}} typography on a {{grade.background_color}} background. Primary colour {{grade.primary_color}} for headings and structural elements; {{grade.accent_color}} highlights the callout box. Complexity level: {{grade.complexity_level}}. Title: 'What is AI?' Subtitle: 'Machines that learn, think, and help'. Three-column layout. Column 1 'AI in Your World': a friendly robot at the centre of device icons (phone, car, hospital cross, smart speaker) connected by dotted lines; body text explains AI learns from data and is everywhere. Column 2 'Human vs AI': split illustration with a child juggling books, a ball, and a paintbrush on the left, and a robot focused on a single chess piece with an X over an open book on the right; body explains human intelligence is broad while AI is narrow. Column 3 'Three Levels of AI': a three-rung ladder with Narrow AI (chess piece) at the bottom, General AI (human silhouette) in the middle, and Super AI (star with question mark) at the top; body explains only Narrow AI exists today. Story callout box at the bottom: a cartoon dog fetching a ball next to a robot playing chess, captioned to show each excels at only one thing."
+  "image_prompt": "A {{global.layout_language}} infographic canvas in {{global.illustration_style}} style with a {{grade.mood}} tone, rendered at {{global.aspect_ratio}} aspect ratio using {{global.font_style}} typography on a {{grade.background_color}} background. Primary colour {{grade.primary_color}} for column headings and structural dividers; {{grade.accent_color}} for the callout box border and background tint. Complexity: {{grade.complexity_level}}. Layout: 3 equal vertical columns side by side occupying the top 75% of the canvas, each with a heading placeholder at the top and a body text placeholder below. A thin vertical divider separates each column. Reserve the bottom 25% for a full-width highlighted callout box with a heading placeholder and body text area inside."
 }
 ```
 
@@ -327,10 +324,12 @@ Before writing your final JSON, verify each item:
 
 - All 9 style fields use token placeholders — no hardcoded hex values, font names, or style words.
 - `image_prompt` contains all 9 tokens embedded inline with exact `{{namespace.key}}` syntax.
+- `image_prompt` describes canvas layout and style only — no body text, no `visual_hint` descriptions, no callout text, no title or subtitle prose.
 - Every section has `heading`, `body`, and `visual_hint`.
 - `title` is 6 words or fewer; `subtitle` is 12 words or fewer; each `heading` is 5 words or fewer.
 - `callout` is included only if the gist explicitly had a `Fun Fact:`, `Story/Analogy:`, or activity line.
-- Page count is between 1 and 5, justified by subtopic count, topic complexity, or both per the decision rules.
+- If a `callout` is present, `callout.type` is exactly one of `fun_fact`, `story`, `activity` — never `"comparison"` or any other invented value.
+- Page count is between 1 and the total number of subtopic sections in the gist. Each high-complexity subtopic has its own dedicated page; low-complexity subtopics are grouped.
 - Multi-page output uses a bare `---` separator with no surrounding text or array wrapper.
 - JSON is valid: all strings are quoted, all arrays and objects are properly opened and closed, no trailing commas.
 

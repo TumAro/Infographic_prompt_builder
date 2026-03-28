@@ -173,23 +173,37 @@ def run_topic(
         output_path = OUTPUT_DIR / f"grade_{grade}" / f"module_{module}" / f"topic_{topic}"
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Step 1: Read topic content from structured_data/
-        topic_content = md_parser.get_topic_content_from_md(
-            grade=grade,
-            module_num=module,
-            topic_num=topic,
-            structured_base=STRUCTURED_DIR,
+        # Step 1: Locate topic.md in structured_data/
+        topic_md_path = (
+            STRUCTURED_DIR
+            / f"grade_{grade}"
+            / f"module_{module}"
+            / f"topic_{topic}"
+            / "topic.md"
         )
 
-        # Step 2: Generate gist.md
-        gist_exists = (output_path / "gist.md").exists()
+        # Step 2: Generate gist.md (one LLM call per subtopic)
+        gist_path = output_path / "gist.md"
+        gist_exists = gist_path.exists()
         if force_gist and gist_exists:
             _force_clear_gist(output_path)
             print(f"    [force-gist] deleted existing gist.md")
+            gist_exists = False
         elif gist_exists:
             print(f"    [skip] gist.md already exists")
 
-        gist_text = gist_llm.generate_gist(topic_content, grade, output_path)
+        if gist_exists:
+            gist_text = gist_path.read_text(encoding="utf-8")
+        else:
+            sections = []
+            topic_name = None
+            for t_name, sub_name, sub_raw in md_parser.iter_subtopics(topic_md_path):
+                topic_name = t_name
+                print(f"      [gist] subtopic: {sub_name}")
+                section = gist_llm.generate_subtopic_gist(t_name, sub_name, sub_raw, grade)
+                sections.append(section)
+            gist_text = f"# {topic_name}\n\n" + "\n\n---\n\n".join(sections)
+            gist_path.write_text(gist_text, encoding="utf-8")
 
         if gist_only:
             print(f"    [gist-only] skipping prompt generation and resolver")

@@ -245,3 +245,44 @@ def get_topic_content_from_md(
             "Run the pipeline with --parse-raw first to generate structured_data/."
         )
     return parse_topic_md(md_path)
+
+
+def iter_subtopics(md_path: "str | Path"):
+    """
+    Yield (topic_name, subtopic_name, raw_markdown_text) for each subtopic in
+    a topic.md file.
+
+    raw_markdown_text is the verbatim content of that subtopic section —
+    the exact lines as written in topic.md, excluding the '## Subtopic:' heading
+    line itself.  No block parsing is performed; the raw text is passed directly
+    to gist_llm for summarisation.
+
+    Yields nothing if the file has no subtopics.
+    """
+    md_path = Path(md_path)
+    lines = md_path.read_text(encoding="utf-8").splitlines()
+
+    topic_name = ""
+    cur_subtopic: str | None = None
+    cur_lines: list[str] = []
+
+    for line in lines:
+        if line.startswith("# Topic:"):
+            topic_name = line[len("# Topic:"):].strip()
+            continue
+
+        if line.startswith("##") and not line.startswith("###"):
+            if cur_subtopic is not None:
+                yield topic_name, cur_subtopic, "\n".join(cur_lines).strip()
+            if line.startswith("## Subtopic:"):
+                cur_subtopic = line[len("## Subtopic:"):].strip()
+            else:
+                cur_subtopic = line[len("##"):].strip()
+            cur_lines = []
+            continue
+
+        if cur_subtopic is not None:
+            cur_lines.append(line)
+
+    if cur_subtopic is not None:
+        yield topic_name, cur_subtopic, "\n".join(cur_lines).strip()
