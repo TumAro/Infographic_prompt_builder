@@ -3,7 +3,7 @@ pipeline.py — CLI orchestrator for the AI Infographic Picture Book Generator.
 
 Two-phase pipeline:
     Phase 1 (parse):    doc_parser → structured_data/grade_N/module_N/topic_N/topic.md
-    Phase 2 (generate): md_parser  → gist_llm → prompt_llm → resolver
+    Phase 2 (generate): md_parser  → plan_llm → prompt_llm → resolver
 
 Usage:
     # Parse phase only (build structured_data/)
@@ -22,7 +22,7 @@ Usage:
 
 Skip logic (generate mode):
     - topic.md missing        → error (run --parse-raw first)
-    - gist.md exists          → skip gist_llm  (override: --force-gist)
+    - plan.md exists          → skip plan_llm  (override: --force-plan)
     - page_N_content.json exists → skip prompt_llm (override: --force-prompt)
     - resolver always runs
 """
@@ -33,15 +33,17 @@ import traceback
 from pathlib import Path
 
 import doc_parser
-import gist_llm
+import plan_llm
 import md_parser
 import prompt_llm
 import resolver
+import book_md_adapter
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
 OUTPUT_DIR = ROOT / "output"
 STRUCTURED_DIR = ROOT / "structured_data"
+BOOK_OUTPUT_DIR = ROOT / "book_output"
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +102,8 @@ def _discover_topics(grade: int, module_num: int) -> list:
 # Force-clear helpers
 # ---------------------------------------------------------------------------
 
-def _force_clear_gist(output_path: Path) -> None:
-    p = output_path / "gist.md"
+def _force_clear_plan(output_path: Path) -> None:
+    p = output_path / "plan.md"
     if p.exists():
         p.unlink()
 
@@ -119,23 +121,24 @@ def run_topic(
     grade: int,
     module: int,
     topic: int,
-    force_gist: bool = False,
+    force_plan: bool = False,
     force_prompt: bool = False,
-    gist_only: bool = False,
+    plan_only: bool = False,
     parse_raw: bool = False,
     force_parse: bool = False,
+    target_pages: set | None = None,
 ) -> dict:
     """
     Run the pipeline for a single topic.
 
     In parse_raw mode: writes structured_data/grade_N/module_N/topic_N/topic.md
-    In generate mode:  reads from structured_data/ and runs gist_llm → prompt_llm → resolver
+    In generate mode:  reads from structured_data/ and runs plan_llm → prompt_llm → resolver
 
     Returns:
         {
             "grade": N, "module": M, "topic": T,
             "pages": N,       # 0 in parse_raw mode
-            "skipped": bool,  # True if topic.md/gist.md already existed and was reused
+            "skipped": bool,  # True if topic.md/plan.md already existed and was reused
             "error": None | str
         }
     """
@@ -182,42 +185,51 @@ def run_topic(
             / "topic.md"
         )
 
-        # Step 2: Generate gist.md (one LLM call per subtopic)
-        gist_path = output_path / "gist.md"
-        gist_exists = gist_path.exists()
-        if force_gist and gist_exists:
-            _force_clear_gist(output_path)
-            print(f"    [force-gist] deleted existing gist.md")
-            gist_exists = False
-        elif gist_exists:
-            print(f"    [skip] gist.md already exists")
+        # Step 2: Generate plan.md (cumulative LLM call per subtopic)
+        plan_path = output_path / "plan.md"
+        plan_exists = plan_path.exists()
+        if force_plan and plan_exists:
+            _force_clear_plan(output_path)
+            print(f"    [force-plan] deleted existing plan.md")
+            plan_exists = False
+        elif plan_exists:
+            print(f"    [skip] plan.md already exists")
 
-        if gist_exists:
-            gist_text = gist_path.read_text(encoding="utf-8")
+        if plan_exists:
+            plan_text = plan_path.read_text(encoding="utf-8")
         else:
-            sections = []
+            subtopics = []
             topic_name = None
             for t_name, sub_name, sub_raw in md_parser.iter_subtopics(topic_md_path):
-                topic_name = t_name
-                print(f"      [gist] subtopic: {sub_name}")
-                section = gist_llm.generate_subtopic_gist(t_name, sub_name, sub_raw, grade)
-                sections.append(section)
-            gist_text = f"# {topic_name}\n\n" + "\n\n---\n\n".join(sections)
-            gist_path.write_text(gist_text, encoding="utf-8")
+                if topic_name is None:
+                    topic_name = t_name
+                subtopics.append((sub_name, sub_raw))
+            plan_text = plan_llm.generate_topic_plan(topic_name, subtopics, grade)
+            plan_path.write_text(plan_text, encoding="utf-8")
 
-        if gist_only:
-            print(f"    [gist-only] skipping prompt generation and resolver")
+        if plan_only:
+            print(f"    [plan-only] skipping prompt generation and resolver")
             return result
 
         # Step 3: Generate page_N_content.json
-        prompt_exists = (output_path / "page_1_content.json").exists()
-        if force_prompt and prompt_exists:
-            _force_clear_content_jsons(output_path)
-            print(f"    [force-prompt] deleted existing page_*_content.json")
-        elif prompt_exists:
-            print(f"    [skip] page_1_content.json already exists")
-
-        prompt_llm.generate_content_jsons(gist_text, grade, module, topic, output_path)
+        if target_pages is not None:
+            if force_prompt:
+                for pn in target_pages:
+                    p = output_path / f"page_{pn}_content.json"
+                    if p.exists():
+                        p.unlink()
+                        print(f"    [force-prompt] deleted page_{pn}_content.json")
+            prompt_llm.generate_content_jsons(
+                plan_text, grade, module, topic, output_path, target_pages=target_pages
+            )
+        else:
+            prompt_exists = (output_path / "page_1_content.json").exists()
+            if force_prompt and prompt_exists:
+                _force_clear_content_jsons(output_path)
+                print(f"    [force-prompt] deleted existing page_*_content.json")
+            elif prompt_exists:
+                print(f"    [skip] page_1_content.json already exists")
+            prompt_llm.generate_content_jsons(plan_text, grade, module, topic, output_path)
 
         # Step 4: Resolve tokens (always runs)
         final_paths = resolver.resolve_topic(grade, module, topic)
@@ -231,6 +243,48 @@ def run_topic(
     return result
 
 
+def run_topic_from_book(
+    file_path: Path,
+    force_adapt: bool = False,
+    force_plan: bool = False,
+    force_prompt: bool = False,
+    plan_only: bool = False,
+) -> dict:
+    """
+    Phase 0 + Phase 2 for a single Book Writer topic file.
+
+    Runs book_md_adapter (Phase 0) to write topic.md to structured_data/,
+    then runs the normal generate phase (plan_llm → prompt_llm → resolver).
+    Grade/module/topic are inferred from the file's frontmatter — no CLI flags needed.
+    """
+    # Parse frontmatter to extract coordinates
+    text = file_path.read_text(encoding="utf-8")
+    raw_lines = text.splitlines()
+    meta, _ = book_md_adapter._parse_frontmatter(raw_lines)
+    if not meta:
+        return {
+            "grade": 0, "module": 0, "topic": 0,
+            "pages": 0, "skipped": False,
+            "error": f"No frontmatter found in {file_path}",
+        }
+    grade, module_num, _module_name, topic_num, _topic_name = book_md_adapter._extract_metadata(meta)
+
+    print(f"  [book] Grade {grade} / Module {module_num} / Topic {module_num}.{topic_num}")
+
+    # Phase 0: adapt
+    book_md_adapter.adapt_file(file_path, force=force_adapt)
+
+    # Phase 2: generate
+    return run_topic(
+        grade, module_num, topic_num,
+        force_plan=force_plan,
+        force_prompt=force_prompt,
+        plan_only=plan_only,
+        parse_raw=False,
+        force_parse=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scope runners
 # ---------------------------------------------------------------------------
@@ -238,9 +292,9 @@ def run_topic(
 def run_module(
     grade: int,
     module: int,
-    force_gist: bool,
+    force_plan: bool,
     force_prompt: bool,
-    gist_only: bool = False,
+    plan_only: bool = False,
     parse_raw: bool = False,
     force_parse: bool = False,
 ) -> list:
@@ -250,7 +304,7 @@ def run_module(
         print(f"  Topic {topic_num}...")
         r = run_topic(
             grade, module, topic_num,
-            force_gist, force_prompt, gist_only,
+            force_plan, force_prompt, plan_only,
             parse_raw, force_parse,
         )
         results.append(r)
@@ -259,9 +313,9 @@ def run_module(
 
 def run_grade(
     grade: int,
-    force_gist: bool,
+    force_plan: bool,
     force_prompt: bool,
-    gist_only: bool = False,
+    plan_only: bool = False,
     parse_raw: bool = False,
     force_parse: bool = False,
 ) -> list:
@@ -270,15 +324,15 @@ def run_grade(
     for module_num in module_nums:
         print(f"Module {module_num}...")
         results.extend(
-            run_module(grade, module_num, force_gist, force_prompt, gist_only, parse_raw, force_parse)
+            run_module(grade, module_num, force_plan, force_prompt, plan_only, parse_raw, force_parse)
         )
     return results
 
 
 def run_all(
-    force_gist: bool,
+    force_plan: bool,
     force_prompt: bool,
-    gist_only: bool = False,
+    plan_only: bool = False,
     parse_raw: bool = False,
     force_parse: bool = False,
 ) -> list:
@@ -287,7 +341,7 @@ def run_all(
     for grade in grades:
         print(f"Grade {grade}...")
         results.extend(
-            run_grade(grade, force_gist, force_prompt, gist_only, parse_raw, force_parse)
+            run_grade(grade, force_plan, force_prompt, plan_only, parse_raw, force_parse)
         )
     return results
 
@@ -314,9 +368,9 @@ if __name__ == "__main__":
         help="Overwrite existing topic.md files during --parse-raw",
     )
     parser.add_argument(
-        "--force-gist",
+        "--force-plan",
         action="store_true",
-        help="Regenerate gist.md even if it already exists",
+        help="Regenerate plan.md even if it already exists",
     )
     parser.add_argument(
         "--force-prompt",
@@ -324,9 +378,23 @@ if __name__ == "__main__":
         help="Regenerate page_N_content.json even if it already exists",
     )
     parser.add_argument(
-        "--gist-only",
+        "--plan-only",
         action="store_true",
-        help="Generate only gist.md; skip prompt_llm and resolver",
+        help="Generate only plan.md; skip prompt_llm and resolver",
+    )
+    parser.add_argument(
+        "--from-book",
+        metavar="PATH",
+        help="Path to a Book Writer topic_M.T.md file or folder of such files",
+    )
+    parser.add_argument(
+        "--force-adapt",
+        action="store_true",
+        help="Overwrite existing topic.md files when using --from-book",
+    )
+    parser.add_argument(
+        "--page", type=int, action="append", dest="pages", metavar="N",
+        help="Process only page N (repeatable: --page 3 --page 5). Requires --grade --module --topic.",
     )
     args = parser.parse_args()
 
@@ -334,12 +402,74 @@ if __name__ == "__main__":
         parser.error("--topic requires --module")
     if args.module is not None and args.grade is None:
         parser.error("--module requires --grade")
+    if args.pages and (args.grade is None or args.module is None or args.topic is None):
+        parser.error("--page requires --grade, --module, and --topic")
 
     parse_raw = args.parse_raw
     force_parse = args.force_parse
-    force_gist = args.force_gist
+    force_plan = args.force_plan
     force_prompt = args.force_prompt
-    gist_only = args.gist_only
+    plan_only = args.plan_only
+    force_adapt = getattr(args, 'force_adapt', False)
+    target_pages = set(args.pages) if args.pages else None
+
+    # ------------------------------------------------------------------
+    # --from-book mode: Phase 0 (adapter) + Phase 2 (generate)
+    # ------------------------------------------------------------------
+    if args.from_book:
+        from_book_path = Path(args.from_book)
+        book_results = []
+
+        if from_book_path.is_file():
+            print(f"[BOOK] {from_book_path.name}")
+            book_results.append(
+                run_topic_from_book(
+                    from_book_path,
+                    force_adapt=force_adapt,
+                    force_plan=force_plan,
+                    force_prompt=force_prompt,
+                    plan_only=plan_only,
+                )
+            )
+        elif from_book_path.is_dir():
+            files = sorted(from_book_path.rglob("topic_*.md"))
+            if not files:
+                print(f"[WARN] No topic_*.md files found in {from_book_path}")
+            for f in files:
+                print(f"[BOOK] {f.name}")
+                book_results.append(
+                    run_topic_from_book(
+                        f,
+                        force_adapt=force_adapt,
+                        force_plan=force_plan,
+                        force_prompt=force_prompt,
+                        plan_only=plan_only,
+                    )
+                )
+        else:
+            print(f"[ERROR] --from-book path not found: {from_book_path}")
+            raise SystemExit(1)
+
+        # Print summary and exit — do not fall through to legacy mode
+        total = len(book_results)
+        succeeded = sum(1 for r in book_results if r["error"] is None)
+        total_pages = sum(r["pages"] for r in book_results)
+        errors = [r for r in book_results if r["error"] is not None]
+        print()
+        print("=" * 60)
+        print("SUMMARY (book writer mode)")
+        print(f"  Topics attempted : {total}")
+        print(f"  Topics succeeded : {succeeded}")
+        if not plan_only:
+            print(f"  Pages generated  : {total_pages}")
+        print(f"  Errors           : {len(errors)}")
+        if errors:
+            print()
+            print("Failed topics:")
+            for r in errors:
+                print(f"  grade {r['grade']} / module {r['module']} / topic {r['topic']} — {r['error']}")
+        print("=" * 60)
+        raise SystemExit(0)
 
     mode_label = "PARSE" if parse_raw else "GENERATE"
 
@@ -367,8 +497,9 @@ if __name__ == "__main__":
         results = [
             run_topic(
                 args.grade, args.module, args.topic,
-                force_gist, force_prompt, gist_only,
+                force_plan, force_prompt, plan_only,
                 parse_raw, force_parse,
+                target_pages=target_pages,
             )
         ]
 
@@ -376,19 +507,19 @@ if __name__ == "__main__":
         print(f"[{mode_label}] Grade {args.grade} / Module {args.module}")
         results = run_module(
             args.grade, args.module,
-            force_gist, force_prompt, gist_only,
+            force_plan, force_prompt, plan_only,
             parse_raw, force_parse,
         )
 
     elif args.grade is not None:
         print(f"[{mode_label}] Grade {args.grade}")
         results = run_grade(
-            args.grade, force_gist, force_prompt, gist_only, parse_raw, force_parse
+            args.grade, force_plan, force_prompt, plan_only, parse_raw, force_parse
         )
 
     else:
         print(f"[{mode_label}] All grades")
-        results = run_all(force_gist, force_prompt, gist_only, parse_raw, force_parse)
+        results = run_all(force_plan, force_prompt, plan_only, parse_raw, force_parse)
 
     # Summary
     total = len(results)
@@ -404,7 +535,7 @@ if __name__ == "__main__":
     print(f"  Topics attempted : {total}")
     print(f"  Topics succeeded : {succeeded}")
     print(f"  Topics skipped   : {skipped}")
-    if not parse_raw and not gist_only:
+    if not parse_raw and not plan_only:
         print(f"  Pages generated  : {total_pages}")
     print(f"  Errors           : {len(errors)}")
 

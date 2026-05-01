@@ -1,5 +1,9 @@
 """
-prompt_llm.py — Reads gist.md; decides page count; outputs page_N_content.json with style tokens.
+prompt_llm.py — Reads plan.md; outputs page_N_content.json with style tokens.
+
+One LLM call per page. Each page is validated and written immediately.
+Per-page skip logic: if page_N_content.json already exists it is loaded and
+the LLM is not called for that page. Partial runs resume automatically.
 
 Style tokens use {{global.key}} and {{grade.key}} syntax — never hardcoded values.
 Writes: output/grade_N/module_M/topic_T/page_N_content.json
@@ -15,13 +19,15 @@ ROOT = Path(__file__).parent
 
 REQUIRED_FIELDS = {
     "page", "topic", "layout_type", "title", "subtitle",
-    "style", "sections", "image_prompt",
+    "style", "sections", "callout", "image_prompt",
 }
 
 VALID_LAYOUT_TYPES = {
     "concept_intro", "two_section_comparison", "multi_column",
     "process_flow", "analogy_anchor",
 }
+
+VALID_CALLOUT_TYPES = {"fun_fact", "activity", "story", "none"}
 
 EXPECTED_TOKENS = [
     "{{global.illustration_style}}",
@@ -156,12 +162,6 @@ def _sanitize_control_chars(s: str) -> str:
     return ''.join(result)
 
 
-def _parse_pages(raw: str) -> list:
-    """Split raw LLM output on '---' separator lines and parse each chunk as JSON."""
-    chunks = re.split(r"^\s*---\s*$", raw, flags=re.MULTILINE)
-    return [json.loads(_sanitize_control_chars(chunk.strip())) for chunk in chunks if chunk.strip()]
-
-
 def _validate_page(page: dict) -> list:
     """Return a list of validation error strings (empty list = valid)."""
     errors = []
@@ -191,6 +191,21 @@ def _validate_page(page: dict) -> list:
                 if field not in sec:
                     errors.append(f"sections[{i}] missing {field!r}")
 
+    # callout schema
+    if "callout" in page:
+        co = page["callout"]
+        if not isinstance(co, dict):
+            errors.append("callout must be an object")
+        else:
+            for field in ("type", "text", "visual_hint"):
+                if field not in co:
+                    errors.append(f"callout missing key: {field!r}")
+            if "type" in co and co["type"] not in VALID_CALLOUT_TYPES:
+                errors.append(
+                    f"callout.type invalid: {co['type']!r}. "
+                    f"Must be one of {sorted(VALID_CALLOUT_TYPES)}"
+                )
+
     # image_prompt must contain all 9 tokens
     if "image_prompt" in page:
         img = page["image_prompt"]
@@ -201,65 +216,79 @@ def _validate_page(page: dict) -> list:
     return errors
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def _consolidate_callouts(block: str) -> str:
+    """
+    If a page block has more than one **Callout:** line, keep only the first one
+    and its corresponding **Callout visual:** line. Remove subsequent callout pairs.
 
-def generate_content_jsons(
-    gist_md: str,
+    Defensive guardrail: plan_llm should never emit two callouts per page, but if
+    it does, this ensures prompt_llm receives a single unambiguous callout.
+    """
+    lines = block.splitlines(keepends=True)
+    callout_indices = [i for i, l in enumerate(lines) if l.startswith("**Callout:**")]
+    if len(callout_indices) <= 1:
+        return block
+    to_remove: set[int] = set()
+    for idx in callout_indices[1:]:
+        to_remove.add(idx)
+        if idx + 1 < len(lines) and lines[idx + 1].startswith("**Callout visual:**"):
+            to_remove.add(idx + 1)
+    return "".join(l for i, l in enumerate(lines) if i not in to_remove)
+
+
+def _split_plan_pages(plan_text: str) -> list:
+    """
+    Split plan_text on '## Page N' headings.
+    Returns [(page_num, block_text), ...] in order.
+    """
+    pattern = re.compile(r"^(## Page \d+.*)", re.MULTILINE)
+    matches = list(pattern.finditer(plan_text))
+    if not matches:
+        return []
+    pages = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(plan_text)
+        block = _consolidate_callouts(plan_text[start:end].strip())
+        page_num = int(re.search(r"## Page (\d+)", m.group()).group(1))
+        pages.append((page_num, block))
+    return pages
+
+
+def _extract_topic_name(plan_text: str) -> str:
+    """Extract topic name from '# Plan: {Topic Name}' header."""
+    m = re.search(r"^# Plan:\s*(.+)", plan_text, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _build_page_user_message(
     grade: int,
-    module: int,
-    topic: int,
-    output_path,
-) -> list:
+    topic_name: str,
+    page_num: int,
+    total_pages: int,
+    page_block: str,
+) -> str:
+    """Build the user message for a single page call."""
+    return (
+        f"Grade: {grade}\n"
+        f"Topic: {topic_name}\n"
+        f"Page: {page_num} of {total_pages}\n\n"
+        f"{page_block}"
+    )
+
+
+def _generate_single_page(
+    messages: list,
+    cfg: dict,
+    config: dict,
+    global_cfg: dict,
+    grade_cfg: dict,
+    page_num: int,
+) -> dict:
     """
-    Generate page_N_content.json files for a single topic via an Ollama LLM.
-
-    If page_1_content.json already exists at output_path, all existing page files
-    are returned immediately without calling the LLM (skip logic).
-
-    On JSON parse failure the call is retried once with an explicit JSON reminder.
-    Parsed pages are validated for required fields and style token correctness.
-
-    Args:
-        gist_md:     Content of gist.md for the topic.
-        grade:       Grade number (e.g. 6). Prepended to the user message.
-        module:      Module number (1-indexed).
-        topic:       Topic number (1-indexed).
-        output_path: Directory where page_N_content.json files are written.
-                     Created automatically if it does not exist.
-
-    Returns:
-        List of JSON strings (raw file contents), one per page.
+    Make one LLM call for a single page block. Parse, normalize, validate.
+    Retries once on parse or validation failure. Raises ValueError on second failure.
     """
-    output_path = Path(output_path)
-
-    # Skip logic: if page_1_content.json exists, load and return all existing pages
-    page_1 = output_path / "page_1_content.json"
-    if page_1.exists():
-        result = []
-        n = 1
-        while True:
-            p = output_path / f"page_{n}_content.json"
-            if not p.exists():
-                break
-            result.append(p.read_text(encoding="utf-8"))
-            n += 1
-        return result
-
-    config = _load_config()
-    system_prompt = _load_system_prompt()
-    cfg = config["prompt_llm"]
-    global_cfg, grade_cfg = _load_style_configs(grade)
-
-    user_msg = f"Grade: {grade}\n\n{gist_md}"
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": user_msg},
-    ]
-
-    # num_ctx gives qwen3-family thinking models enough context window to finish
-    # internal reasoning AND still produce full JSON output.
     _ollama_opts = {"options": {"num_ctx": cfg["num_ctx"]}}
 
     response = litellm.completion(
@@ -271,28 +300,30 @@ def generate_content_jsons(
         extra_body=_ollama_opts,
     )
     raw = _strip_thinking(response.choices[0].message.content)
-    messages_so_far = messages
 
-    # Up to 1 retry for either parse failure or validation failure
     for attempt in range(2):
+        # Parse
         try:
-            pages = _parse_pages(raw)
-        except (json.JSONDecodeError, ValueError):
+            # Extract JSON: find first { and last }
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start == -1 or end == 0:
+                raise json.JSONDecodeError("No JSON object found", raw, 0)
+            page = json.loads(_sanitize_control_chars(raw[start:end]))
+        except (json.JSONDecodeError, ValueError) as exc:
             if attempt == 1:
-                raise
+                raise ValueError(f"Page {page_num}: JSON parse failed after retry: {exc}") from exc
             if _looks_truncated(raw):
-                # Output was cut off mid-JSON (likely hit max_tokens during thinking).
-                # Start fresh — don't pass the truncated output back; it only wastes context.
-                retry_messages = messages_so_far
+                retry_messages = messages
             else:
-                retry_messages = messages_so_far + [
+                retry_messages = messages + [
                     {"role": "assistant", "content": raw},
                     {
                         "role": "user",
                         "content": (
                             "Your response contained invalid JSON. "
-                            "Output only valid JSON objects separated by --- on its own line. "
-                            "No extra text before the first { or after the last }."
+                            "Output only a single valid JSON object. "
+                            "No extra text before { or after }."
                         ),
                     },
                 ]
@@ -307,25 +338,21 @@ def generate_content_jsons(
             raw = _strip_thinking(response2.choices[0].message.content)
             continue
 
-        # Normalize style tokens before validation (model may have used hardcoded values)
-        pages = [_normalize_page(p, global_cfg, grade_cfg) for p in pages]
+        # Normalize style tokens
+        page = _normalize_page(page, global_cfg, grade_cfg)
 
-        # Validate all pages
-        all_errors = []
-        for i, page in enumerate(pages):
-            errs = _validate_page(page)
-            if errs:
-                all_errors.append(f"Page {i + 1}:\n" + "\n".join(errs))
-
-        if not all_errors:
-            break  # all pages valid
+        # Validate
+        errors = _validate_page(page)
+        if not errors:
+            return page
 
         if attempt == 1:
-            raise ValueError("Page validation failed after retry:\n" + "\n\n".join(all_errors))
+            raise ValueError(
+                f"Page {page_num}: validation failed after retry:\n" + "\n".join(errors)
+            )
 
-        # Retry with specific validation errors
-        error_summary = "\n\n".join(all_errors)
-        retry_messages = messages_so_far + [
+        error_summary = "\n".join(errors)
+        retry_messages = messages + [
             {"role": "assistant", "content": raw},
             {
                 "role": "user",
@@ -336,7 +363,7 @@ def generate_content_jsons(
                     "process_flow, analogy_anchor. "
                     "All 9 style fields must use {{global.*}} or {{grade.*}} tokens. "
                     "image_prompt must contain all 9 tokens. "
-                    "Output only the corrected JSON."
+                    "Output only the corrected JSON object."
                 ),
             },
         ]
@@ -350,10 +377,77 @@ def generate_content_jsons(
         )
         raw = _strip_thinking(response2.choices[0].message.content)
 
+    # Should never reach here — loop always returns or raises
+    raise ValueError(f"Page {page_num}: unexpected exit from retry loop")
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def generate_content_jsons(
+    plan_text: str,
+    grade: int,
+    module: int,
+    topic: int,
+    output_path,
+    target_pages: set | None = None,
+) -> list:
+    """
+    Generate page_N_content.json files for a single topic via per-page LLM calls.
+
+    One LLM call is made per page block in plan_text. Each page is validated and
+    written to disk immediately. Per-page skip logic: if page_N_content.json already
+    exists it is loaded without calling the LLM. Partial runs resume automatically.
+
+    Args:
+        plan_text:   Content of plan.md for the topic.
+        grade:       Grade number (e.g. 6).
+        module:      Module number (1-indexed).
+        topic:       Topic number (1-indexed).
+        output_path: Directory where page_N_content.json files are written.
+                     Created automatically if it does not exist.
+
+    Returns:
+        List of JSON strings (raw file contents), one per page, in page order.
+    """
+    output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    config = _load_config()
+    system_prompt = _load_system_prompt()
+    cfg = config["prompt_llm"]
+    global_cfg, grade_cfg = _load_style_configs(grade)
+
+    topic_name = _extract_topic_name(plan_text)
+    page_blocks = _split_plan_pages(plan_text)
+    total = len(page_blocks)
+
     result = []
-    for i, page in enumerate(pages, 1):
-        json_str = json.dumps(page, indent=2, ensure_ascii=False)
-        (output_path / f"page_{i}_content.json").write_text(json_str, encoding="utf-8")
+    for page_num, block in page_blocks:
+        if target_pages is not None and page_num not in target_pages:
+            continue  # not targeted — leave existing file untouched
+
+        out_file = output_path / f"page_{page_num}_content.json"
+
+        if out_file.exists():
+            print(f"    [skip] page_{page_num}_content.json already exists")
+            result.append(out_file.read_text(encoding="utf-8"))
+            continue
+
+        print(f"    [prompt] Generating page {page_num} of {total}...")
+        user_msg = _build_page_user_message(grade, topic_name, page_num, total, block)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_msg},
+        ]
+
+        page_dict = _generate_single_page(
+            messages, cfg, config, global_cfg, grade_cfg, page_num
+        )
+
+        json_str = json.dumps(page_dict, indent=2, ensure_ascii=False)
+        out_file.write_text(json_str, encoding="utf-8")
         result.append(json_str)
+
     return result

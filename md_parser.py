@@ -53,6 +53,12 @@ def parse_topic_md(md_path: "str | Path") -> dict:
     text = md_path.read_text(encoding="utf-8")
     lines = text.splitlines()
 
+    # Skip YAML frontmatter if present (safety net for adapter output)
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.strip() == "---"), None)
+        if end is not None:
+            lines = lines[end + 1:]
+
     topic_name = ""
     subtopics: list[dict] = []
     cur_subtopic: str | None = None
@@ -261,6 +267,12 @@ def iter_subtopics(md_path: "str | Path"):
     """
     md_path = Path(md_path)
     lines = md_path.read_text(encoding="utf-8").splitlines()
+
+    # Skip YAML frontmatter if present (safety net for adapter output)
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.strip() == "---"), None)
+        if end is not None:
+            lines = lines[end + 1:]
 
     topic_name = ""
     cur_subtopic: str | None = None
