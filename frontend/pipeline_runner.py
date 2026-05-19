@@ -16,6 +16,15 @@ def build_parse_cmd(grade, module, topic, force_parse) -> list[str]:
     return cmd
 
 
+def build_plan_cmd(grade, module, topic, force_plan) -> list[str]:
+    cmd = [sys.executable, "pipeline.py", "--plan-only"]
+    if grade:        cmd += ["--grade", str(grade)]
+    if module:       cmd += ["--module", str(module)]
+    if topic:        cmd += ["--topic", str(topic)]
+    if force_plan:   cmd.append("--force-plan")
+    return cmd
+
+
 def build_generate_cmd(grade, module, topic, force_plan, force_prompt) -> list[str]:
     cmd = [sys.executable, "pipeline.py"]
     if grade:         cmd += ["--grade", str(grade)]
@@ -26,11 +35,12 @@ def build_generate_cmd(grade, module, topic, force_plan, force_prompt) -> list[s
     return cmd
 
 
-def build_book_cmd(file_path: str, force_adapt, force_plan, force_prompt) -> list[str]:
+def build_book_cmd(file_path: str, force_adapt, force_plan, force_prompt, plan_only=False) -> list[str]:
     cmd = [sys.executable, "pipeline.py", "--from-book", file_path]
     if force_adapt:   cmd.append("--force-adapt")
     if force_plan:    cmd.append("--force-plan")
     if force_prompt:  cmd.append("--force-prompt")
+    if plan_only:     cmd.append("--plan-only")
     return cmd
 
 
