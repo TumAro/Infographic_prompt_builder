@@ -18,7 +18,7 @@ from pipeline_runner import (
     build_book_cmd,
     stream_pipeline,
 )
-from output_browser import render_output_tree, list_plans
+from output_browser import list_plans
 
 st.set_page_config(page_title="Infographic Generator", layout="wide")
 st.title("Infographic Generator")
@@ -52,25 +52,32 @@ if st.session_state.running:
         g, m, t = p["grade"], p["module"], p["topic"]
         rc1 = stream_pipeline(build_parse_cmd(g, m, t, p["force_parse"]), str(PROJECT_ROOT), log_ph)
         if rc1 != 0:
-            st.error("Parse phase failed. See output above.")
+            st.error("Reading the .docx files failed. Check the output above for details.")
         else:
             rc2 = stream_pipeline(build_plan_cmd(g, m, t, p["force_plan"]), str(PROJECT_ROOT), log_ph)
+            # Always save scope so disk-based plan review can find partial results
+            st.session_state.docx_last_grade  = g
+            st.session_state.docx_last_module = m
+            st.session_state.docx_last_topic  = t
             if rc2 == 0:
-                st.session_state.docx_phase       = "plan_ready"
-                st.session_state.docx_last_grade  = g
-                st.session_state.docx_last_module = m
-                st.session_state.docx_last_topic  = t
+                st.session_state.docx_phase = "plan_ready"
             else:
-                st.error("Plan generation failed. See output above.")
+                partial = list_plans(PROJECT_ROOT, g, m, t)
+                if partial:
+                    st.warning(f"Plan generation had errors, but {len(partial)} plan(s) exist. Review below and proceed or redo.")
+                    st.session_state.docx_phase = "plan_ready"
+                else:
+                    st.error("Plan generation failed. No plans found. See output above.")
 
     elif action == "docx_approve":
         g, m, t = p["grade"], p["module"], p["topic"]
         rc = stream_pipeline(build_generate_cmd(g, m, t, False, p["force_prompt"]), str(PROJECT_ROOT), log_ph)
         if rc == 0:
             st.session_state.docx_phase = "idle"
-            st.success("Done! Prompts are ready. See the output browser below.")
+            st.session_state.docx_last_grade = None  # hide Step 2 — work is done
+            st.success("Done! Open the **Output Browser** page in the left sidebar to download your prompts.")
         else:
-            st.error("Prompt generation failed. See output above.")
+            st.error("Prompt generation failed. Check the output above for details.")
 
     elif action == "docx_redo":
         g, m, t = p["grade"], p["module"], p["topic"]
@@ -95,38 +102,49 @@ if st.session_state.running:
             if rc != 0:
                 st.error(f"{Path(path_str).name} failed.")
                 any_failed = True
+        # Always save paths; transition to plan_ready if at least some plans exist
+        st.session_state.book_last_paths = p["paths"]
+        partial_book = list_plans(PROJECT_ROOT, grade=None, module=None, topic=None)
         if not any_failed:
-            st.session_state.book_phase      = "plan_ready"
-            st.session_state.book_last_paths = p["paths"]
+            st.session_state.book_phase = "plan_ready"
+        elif partial_book:
+            st.warning(f"{len(partial_book)} plan(s) exist despite errors. Review below.")
+            st.session_state.book_phase = "plan_ready"
 
     elif action == "book_approve":
-        any_failed = False
-        for path_str in p["paths"]:
-            rc = stream_pipeline(
-                build_book_cmd(path_str, p["force_adapt"], False, p["force_prompt"]),
-                str(PROJECT_ROOT), log_ph,
-            )
-            if rc != 0:
-                st.error(f"{Path(path_str).name} failed.")
-                any_failed = True
-            else:
-                st.success(f"{Path(path_str).name} done.")
-        if not any_failed:
-            st.session_state.book_phase = "idle"
-            st.success("All prompts generated! See the output browser below.")
+        if not p["paths"]:
+            st.error("No source files available. Re-upload the .md files and try again.")
+        else:
+            any_failed = False
+            for path_str in p["paths"]:
+                rc = stream_pipeline(
+                    build_book_cmd(path_str, p["force_adapt"], False, p["force_prompt"]),
+                    str(PROJECT_ROOT), log_ph,
+                )
+                if rc != 0:
+                    st.error(f"{Path(path_str).name} failed.")
+                    any_failed = True
+                else:
+                    st.success(f"{Path(path_str).name} done.")
+            if not any_failed:
+                st.session_state.book_phase = "idle"
+                st.success("Done! Open the **Output Browser** page in the left sidebar to download your prompts.")
 
     elif action == "book_redo":
-        any_failed = False
-        for path_str in p["paths"]:
-            rc = stream_pipeline(
-                build_book_cmd(path_str, p["force_adapt"], force_plan=True,
-                               force_prompt=False, plan_only=True),
-                str(PROJECT_ROOT), log_ph,
-            )
-            if rc != 0:
-                any_failed = True
-        if any_failed:
-            st.error("Plan regeneration failed for one or more files.")
+        if not p["paths"]:
+            st.error("No source files available. Re-upload the .md files and try again.")
+        else:
+            any_failed = False
+            for path_str in p["paths"]:
+                rc = stream_pipeline(
+                    build_book_cmd(path_str, p["force_adapt"], force_plan=True,
+                                   force_prompt=False, plan_only=True),
+                    str(PROJECT_ROOT), log_ph,
+                )
+                if rc != 0:
+                    any_failed = True
+            if any_failed:
+                st.error("Plan regeneration failed for one or more files.")
 
     st.session_state.running       = False
     st.session_state.pending       = None
@@ -136,12 +154,21 @@ if st.session_state.running:
 # Convenience shorthand
 _busy = st.session_state.running
 
+# ── Sidebar: last pipeline log (for debugging) ────────────────────────────────
+if st.session_state.log_text:
+    with st.sidebar:
+        with st.expander("Last pipeline log", expanded=False):
+            st.code(st.session_state.log_text)
+
 # ── Tab layout ────────────────────────────────────────────────────────────────
 docx_tab, book_tab = st.tabs(["DOCX Mode", "Book Writer Mode"])
 
 # ── DOCX MODE ─────────────────────────────────────────────────────────────────
 with docx_tab:
-    st.markdown("Upload a **Class_N.docx** syllabus and one or more **Module_N_\\*.docx** content files.")
+    st.markdown(
+        "Upload a syllabus file and one or more content files.  \n"
+        "**Naming required:** `Class_6.docx` (syllabus) · `Module_1_Introduction.docx`, `Module_2_AI_Basics.docx` … (content)"
+    )
     uploaded_docx = st.file_uploader(
         "Upload .docx files",
         type=["docx"],
@@ -165,7 +192,8 @@ with docx_tab:
                                              key="docx_module", disabled=_busy)
             with col2:
                 topic_val = st.number_input("Topic (0 = all)", min_value=0, value=0, step=1,
-                                            key="docx_topic", disabled=(_busy or module_val == 0))
+                                            key="docx_topic", disabled=(_busy or module_val == 0),
+                                            help="Select a specific module first to filter by topic.")
 
             module_arg = int(module_val) if module_val > 0 else None
             topic_arg  = int(topic_val)  if (topic_val > 0 and module_arg) else None
@@ -196,7 +224,6 @@ with docx_tab:
         g = st.session_state.docx_last_grade
         m = st.session_state.docx_last_module
         t = st.session_state.docx_last_topic
-
         st.divider()
         st.subheader("Step 2 — Review Plans")
         plans = list_plans(PROJECT_ROOT, g, m, t)
@@ -206,8 +233,8 @@ with docx_tab:
             st.success(f"{len(plans)} plan(s) ready for review.")
             for label, pg, pm, pt, plan_path in plans:
                 with st.expander(label, expanded=True):
-                    st.markdown(plan_path.read_text())
-                    if st.button("↺  Redo this plan", key=f"redo_{pg}_{pm}_{pt}", disabled=_busy):
+                    st.markdown(plan_path.read_text(encoding="utf-8"))
+                    if st.button("↺  Redo this plan", key=f"d_redo_{pg}_{pm}_{pt}", disabled=_busy):
                         st.session_state.running        = True
                         st.session_state.pending        = "redo_single_plan"
                         st.session_state.pending_params = {"grade": pg, "module": pm, "topic": pt}
@@ -215,8 +242,10 @@ with docx_tab:
 
         col_approve, col_redo = st.columns(2)
         with col_approve:
-            if st.button("✓  Plans look good — Generate Prompts", type="primary",
-                         key="docx_approve", disabled=_busy):
+            if g is None:
+                st.info("Upload files above and run Step 1 to enable prompt generation.")
+            elif st.button("✓  Plans look good — Generate Prompts", type="primary",
+                           key="docx_approve", disabled=_busy):
                 st.session_state.running       = True
                 st.session_state.pending       = "docx_approve"
                 st.session_state.pending_params = {
@@ -225,7 +254,7 @@ with docx_tab:
                 }
                 st.rerun()
         with col_redo:
-            if st.button("↺  Redo All Plans", key="docx_redo", disabled=_busy):
+            if g is not None and st.button("↺  Redo All Plans", key="docx_redo", disabled=_busy):
                 st.session_state.running       = True
                 st.session_state.pending       = "docx_redo"
                 st.session_state.pending_params = {"grade": g, "module": m, "topic": t}
@@ -288,17 +317,20 @@ with book_tab:
             st.success(f"{len(plans)} plan(s) ready for review.")
             for label, pg, pm, pt, plan_path in plans:
                 with st.expander(label, expanded=True):
-                    st.markdown(plan_path.read_text())
-                    if st.button("↺  Redo this plan", key=f"redo_{pg}_{pm}_{pt}", disabled=_busy):
+                    st.markdown(plan_path.read_text(encoding="utf-8"))
+                    if st.button("↺  Redo this plan", key=f"b_redo_{pg}_{pm}_{pt}", disabled=_busy):
                         st.session_state.running        = True
                         st.session_state.pending        = "redo_single_plan"
                         st.session_state.pending_params = {"grade": pg, "module": pm, "topic": pt}
                         st.rerun()
 
+        _has_paths = bool(st.session_state.book_last_paths)
         col_approve, col_redo = st.columns(2)
         with col_approve:
-            if st.button("✓  Plans look good — Generate Prompts", type="primary",
-                         key="book_approve", disabled=_busy):
+            if not _has_paths:
+                st.info("Re-upload the source .md files above to enable prompt generation.")
+            elif st.button("✓  Plans look good — Generate Prompts", type="primary",
+                           key="book_approve", disabled=_busy):
                 st.session_state.running       = True
                 st.session_state.pending       = "book_approve"
                 st.session_state.pending_params = {
@@ -308,7 +340,7 @@ with book_tab:
                 }
                 st.rerun()
         with col_redo:
-            if st.button("↺  Redo All Plans", key="book_redo", disabled=_busy):
+            if _has_paths and st.button("↺  Redo All Plans", key="book_redo", disabled=_busy):
                 st.session_state.running       = True
                 st.session_state.pending       = "book_redo"
                 st.session_state.pending_params = {
@@ -316,8 +348,3 @@ with book_tab:
                     "force_adapt": st.session_state.get("b_fa", False),
                 }
                 st.rerun()
-
-# ── OUTPUT BROWSER ────────────────────────────────────────────────────────────
-st.divider()
-with st.expander("View & download output files", expanded=False):
-    render_output_tree(PROJECT_ROOT)

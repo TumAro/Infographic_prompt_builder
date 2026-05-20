@@ -1,9 +1,29 @@
+import hashlib
 import io
 import re
 import zipfile
 from pathlib import Path
 
 import streamlit as st
+
+_SEP = str.maketrans("›—>", "   ")  # normalize separators to spaces for search
+
+
+def _norm(s: str) -> str:
+    return " ".join(s.translate(_SEP).lower().split())
+
+
+def _ck(p: Path) -> str:
+    """Stable session-state key for a path's checkbox — survives sort-order changes."""
+    return "sel_" + hashlib.md5(str(p).encode()).hexdigest()[:8]
+
+
+def _zip_name(p: Path) -> str:
+    """Unique ZIP entry name: G6_M1_T3_page_1_final.json avoids same-name collisions."""
+    g = p.parent.parent.parent.name.split("_")[1]
+    m = p.parent.parent.name.split("_")[1]
+    t = p.parent.name.split("_")[1]
+    return f"G{g}_M{m}_T{t}_{p.name}"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -57,61 +77,74 @@ def render_output_tree(project_root: Path) -> None:
         st.info("No output generated yet.")
         return
 
-    # Collect all final JSON pages across the whole output tree
-    all_pages: list[tuple[str, Path]] = []  # (display_key, path)
-    for grade_dir in sorted(output_dir.glob("grade_*")):
+    # Collect all final JSON pages, then sort newest-first by mtime
+    raw: list[tuple[str, Path]] = []
+    for grade_dir in output_dir.glob("grade_*"):
         g = grade_dir.name.split("_")[1]
-        for module_dir in sorted(grade_dir.glob("module_*")):
+        for module_dir in grade_dir.glob("module_*"):
             mod = module_dir.name.split("_")[1]
-            for topic_dir in sorted(module_dir.glob("topic_*")):
+            for topic_dir in module_dir.glob("topic_*"):
                 top = topic_dir.name.split("_")[1]
                 topic_name = _topic_name_from_plan(topic_dir / "plan.md")
+                # Always include numeric topic ID so "topic 4" always matches in search
                 label_prefix = (
-                    f"Grade {g} › Module {mod} › "
-                    + (f"{topic_name}" if topic_name else f"Topic {top}")
+                    f"Grade {g} › Module {mod} › Topic {top}"
+                    + (f" — {topic_name}" if topic_name else "")
                 )
-                for j in sorted(topic_dir.glob("page_*_final.json")):
+                for j in topic_dir.glob("page_*_final.json"):
                     page_num = j.stem.split("_")[1]
-                    display = f"{label_prefix} › Page {page_num}"
-                    all_pages.append((display, j))
+                    raw.append((f"{label_prefix} › Page {page_num}", j))
+
+    all_pages = sorted(raw, key=lambda x: x[1].stat().st_mtime, reverse=True)
 
     if not all_pages:
         st.info("No output files yet.")
         return
 
-    st.markdown("Select the pages you want, then download them all as a ZIP.")
+    # Search filter
+    query = st.text_input("Search", placeholder="e.g. Variables, Topic 4, Module 2…", key="ob_search")
+    visible = [
+        (d, p) for (d, p) in all_pages
+        if not query or _norm(query) in _norm(d)
+    ]
 
-    # Apply "select all" BEFORE checkboxes are instantiated
-    if st.session_state.pop("_select_all_pending", False):
-        for i in range(len(all_pages)):
-            st.session_state[f"sel_{i}"] = True
+    # Apply "select all / deselect all" BEFORE checkboxes are instantiated
+    pending = st.session_state.pop("_select_all_pending", None)
+    if pending is not None:
+        for k in pending:
+            st.session_state[k] = True
 
-    # Per-page: checkbox for download + expander for preview
-    selected: list[tuple[str, Path]] = []
-    for i, (display, path) in enumerate(all_pages):
+    # Read selected from session state BEFORE rendering checkboxes (safe — just reading)
+    selected = [(d, p) for (d, p) in all_pages if st.session_state.get(_ck(p), False)]
+
+    # ── Action bar at TOP ────────────────────────────────────────────────────────
+    col_info, col_all, col_desel, col_dl = st.columns([3, 1, 1, 2])
+    with col_info:
+        st.caption(f"{len(visible)} shown · {len(selected)} selected")
+    with col_all:
+        if st.button("Select all", key="sel_all"):
+            st.session_state["_select_all_pending"] = [_ck(p) for _, p in visible]
+            st.rerun()
+    with col_desel:
+        if selected and st.button("Deselect all", key="sel_none"):
+            for _, p in all_pages:
+                st.session_state[_ck(p)] = False
+            st.rerun()
+    with col_dl:
+        if selected:
+            st.download_button(
+                label=f"⬇ Download {len(selected)} as ZIP",
+                data=_make_zip([(_zip_name(p), p.read_text(encoding="utf-8")) for _, p in selected]),
+                file_name="infographic_prompts.zip",
+                mime="application/zip",
+                type="primary",
+            )
+
+    # ── Per-page list ────────────────────────────────────────────────────────────
+    for display, path in visible:
         col_chk, col_label = st.columns([1, 11])
         with col_chk:
-            checked = st.checkbox("", key=f"sel_{i}", label_visibility="collapsed")
+            st.checkbox("", key=_ck(path), label_visibility="collapsed")
         with col_label:
             with st.expander(display):
                 st.code(path.read_text(encoding="utf-8"), language="json")
-        if checked:
-            selected.append((display, path))
-
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.caption(f"{len(selected)} of {len(all_pages)} page(s) selected for download")
-    with col2:
-        if st.button("Select all", key="sel_all"):
-            st.session_state["_select_all_pending"] = True
-            st.rerun()
-
-    if selected:
-        zip_pages = [(p.name, p.read_text(encoding="utf-8")) for _, p in selected]
-        st.download_button(
-            label=f"⬇ Download {len(selected)} selected page(s) as ZIP",
-            data=_make_zip(zip_pages),
-            file_name="infographic_prompts.zip",
-            mime="application/zip",
-            type="primary",
-        )

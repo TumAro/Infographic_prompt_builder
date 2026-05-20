@@ -48,12 +48,13 @@ def stage_docx_files(uploaded_files, project_root: Path) -> StagingResult:
         elif kind == "module":
             modules.append((f, module))
         else:
-            result.errors.append(f"Cannot classify '{f.name}' — expected Class_N.docx or Module_N_*.docx")
+            print(f"[WARN] Cannot classify file: {f.name}")
+            result.errors.append(f"'{f.name}' has an unexpected name. Expected something like Class_6.docx or Module_1_Introduction.docx.")
 
     if len(syllabuses) == 0:
-        result.errors.append("No syllabus file found. Upload a Class_N.docx file.")
+        result.errors.append("No syllabus found. Upload a file named like Class_6.docx.")
     elif len(syllabuses) > 1:
-        result.errors.append(f"Multiple syllabus files uploaded ({len(syllabuses)}). Upload exactly one Class_N.docx.")
+        result.errors.append(f"Multiple syllabus files uploaded ({len(syllabuses)}). Upload exactly one (e.g. Class_6.docx).")
 
     if result.errors:
         return result
@@ -102,7 +103,8 @@ def stage_book_files(uploaded_files, project_root: Path) -> list[BookStagingResu
             fields, _ = book_md_adapter._parse_frontmatter(lines)
             grade, module_num, _, topic_num, _ = book_md_adapter._extract_metadata(fields)
         except Exception as e:
-            results.append(BookStagingResult(filename=f.name, error=f"Frontmatter parse failed: {e}"))
+            print(f"[ERROR] Metadata read failed for {f.name}: {e}")
+            results.append(BookStagingResult(filename=f.name, error=f"Could not read metadata from {f.name}. Check that it starts with a valid --- header block."))
             continue
 
         key = (grade, module_num, topic_num)
