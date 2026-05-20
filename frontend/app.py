@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -5,6 +6,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))  # must be before all local imports
 
 import streamlit as st
+
+_features = json.loads((Path(__file__).parent / "features.json").read_text())
+_DOCX_ENABLED = _features.get("docx_mode", False)
 
 from file_staging import (
     stage_docx_files,
@@ -27,12 +31,14 @@ st.caption("Converts textbook content into AI-ready infographic pages. No comman
 # ── Session state defaults ────────────────────────────────────────────────────
 _DEFAULTS = {
     "log_text":         "",
+    "app_success_msg":  None,     # shown once after a successful pipeline run
     "docx_phase":       "idle",   # idle | plan_ready
     "docx_last_grade":  None,
     "docx_last_module": None,
     "docx_last_topic":  None,
     "book_phase":       "idle",   # idle | plan_ready
     "book_last_paths":  [],
+    "book_last_scope":  [],      # [(grade, module, topic)] from last book_plan run
     "running":          False,    # True while any pipeline is executing
     "pending":          None,     # name of the action to run
     "pending_params":   {},       # params for that action
@@ -75,7 +81,7 @@ if st.session_state.running:
         if rc == 0:
             st.session_state.docx_phase = "idle"
             st.session_state.docx_last_grade = None  # hide Step 2 — work is done
-            st.success("Done! Open the **Output Browser** page in the left sidebar to download your prompts.")
+            st.session_state.app_success_msg = "Prompts generated! Open the **Output Browser** page in the left sidebar to download your files."
         else:
             st.error("Prompt generation failed. Check the output above for details.")
 
@@ -102,8 +108,9 @@ if st.session_state.running:
             if rc != 0:
                 st.error(f"{Path(path_str).name} failed.")
                 any_failed = True
-        # Always save paths; transition to plan_ready if at least some plans exist
+        # Always save paths/scope; transition to plan_ready if at least some plans exist
         st.session_state.book_last_paths = p["paths"]
+        st.session_state.book_last_scope = p.get("scope", [])
         partial_book = list_plans(PROJECT_ROOT, grade=None, module=None, topic=None)
         if not any_failed:
             st.session_state.book_phase = "plan_ready"
@@ -128,7 +135,7 @@ if st.session_state.running:
                     st.success(f"{Path(path_str).name} done.")
             if not any_failed:
                 st.session_state.book_phase = "idle"
-                st.success("Done! Open the **Output Browser** page in the left sidebar to download your prompts.")
+                st.session_state.app_success_msg = "Prompts generated! Open the **Output Browser** page in the left sidebar to download your files."
 
     elif action == "book_redo":
         if not p["paths"]:
@@ -154,6 +161,10 @@ if st.session_state.running:
 # Convenience shorthand
 _busy = st.session_state.running
 
+# ── One-shot success banner ───────────────────────────────────────────────────
+if msg := st.session_state.pop("app_success_msg", None):
+    st.success(msg)
+
 # ── Sidebar: last pipeline log (for debugging) ────────────────────────────────
 if st.session_state.log_text:
     with st.sidebar:
@@ -161,104 +172,108 @@ if st.session_state.log_text:
             st.code(st.session_state.log_text)
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-docx_tab, book_tab = st.tabs(["DOCX Mode", "Book Writer Mode"])
+if _DOCX_ENABLED:
+    docx_tab, book_tab = st.tabs(["DOCX Mode", "Book Writer Mode"])
+else:
+    book_tab = st.container()
 
-# ── DOCX MODE ─────────────────────────────────────────────────────────────────
-with docx_tab:
-    st.markdown(
-        "Upload a syllabus file and one or more content files.  \n"
-        "**Naming required:** `Class_6.docx` (syllabus) · `Module_1_Introduction.docx`, `Module_2_AI_Basics.docx` … (content)"
-    )
-    uploaded_docx = st.file_uploader(
-        "Upload .docx files",
-        type=["docx"],
-        accept_multiple_files=True,
-        key="docx_upload",
-    )
+# ── DOCX MODE (disabled via Settings → Feature Flags) ─────────────────────────
+if _DOCX_ENABLED:
+    with docx_tab:
+        st.markdown(
+            "Upload a syllabus file and one or more content files.  \n"
+            "**Naming required:** `Class_6.docx` (syllabus) · `Module_1_Introduction.docx`, `Module_2_AI_Basics.docx` … (content)"
+        )
+        uploaded_docx = st.file_uploader(
+            "Upload .docx files",
+            type=["docx"],
+            accept_multiple_files=True,
+            key="docx_upload",
+        )
 
-    if uploaded_docx:
-        staging = stage_docx_files(uploaded_docx, PROJECT_ROOT)
+        if uploaded_docx:
+            staging = stage_docx_files(uploaded_docx, PROJECT_ROOT)
 
-        if staging.preview_rows:
-            st.dataframe(staging.preview_rows, use_container_width=True)
+            if staging.preview_rows:
+                st.dataframe(staging.preview_rows, use_container_width=True)
 
-        for err in staging.errors:
-            st.error(err)
+            for err in staging.errors:
+                st.error(err)
 
-        if not staging.errors:
-            col1, col2 = st.columns(2)
-            with col1:
-                module_val = st.number_input("Module (0 = all)", min_value=0, value=0, step=1,
-                                             key="docx_module", disabled=_busy)
-            with col2:
-                topic_val = st.number_input("Topic (0 = all)", min_value=0, value=0, step=1,
-                                            key="docx_topic", disabled=(_busy or module_val == 0),
-                                            help="Select a specific module first to filter by topic.")
+            if not staging.errors:
+                col1, col2 = st.columns(2)
+                with col1:
+                    module_val = st.number_input("Module (0 = all)", min_value=0, value=0, step=1,
+                                                 key="docx_module", disabled=_busy)
+                with col2:
+                    topic_val = st.number_input("Topic (0 = all)", min_value=0, value=0, step=1,
+                                                key="docx_topic", disabled=(_busy or module_val == 0),
+                                                help="Select a specific module first to filter by topic.")
 
-            module_arg = int(module_val) if module_val > 0 else None
-            topic_arg  = int(topic_val)  if (topic_val > 0 and module_arg) else None
+                module_arg = int(module_val) if module_val > 0 else None
+                topic_arg  = int(topic_val)  if (topic_val > 0 and module_arg) else None
 
-            existing = check_existing_output(PROJECT_ROOT, staging.grade, module_arg, topic_arg)
-            if existing:
-                st.warning(
-                    f"Output already exists for this scope ({len(existing)} file(s)). "
-                    "The pipeline will skip existing stages. Use Force options below to regenerate."
-                )
+                existing = check_existing_output(PROJECT_ROOT, staging.grade, module_arg, topic_arg)
+                if existing:
+                    st.warning(
+                        f"Output already exists for this scope ({len(existing)} file(s)). "
+                        "The pipeline will skip existing stages. Use Force options below to regenerate."
+                    )
 
-            with st.expander("Advanced: Force re-run options"):
-                force_parse  = st.checkbox("Force re-parse  (overwrite structured data)", key="d_fp",  disabled=_busy)
-                force_plan   = st.checkbox("Force re-plan   (regenerate plan.md)",        key="d_fpl", disabled=_busy)
-                force_prompt = st.checkbox("Force re-prompt (regenerate content JSON)",   key="d_fpr", disabled=_busy)
+                with st.expander("Advanced: Force re-run options"):
+                    force_parse  = st.checkbox("Force re-parse  (overwrite structured data)", key="d_fp",  disabled=_busy)
+                    force_plan   = st.checkbox("Force re-plan   (regenerate plan.md)",        key="d_fpl", disabled=_busy)
+                    force_prompt = st.checkbox("Force re-prompt (regenerate content JSON)",   key="d_fpr", disabled=_busy)
 
-            if st.button("Step 1 — Generate Plans", type="primary", key="docx_plan", disabled=_busy):
-                st.session_state.running       = True
-                st.session_state.pending       = "docx_plan"
-                st.session_state.pending_params = {
-                    "grade": staging.grade, "module": module_arg, "topic": topic_arg,
-                    "force_parse": force_parse, "force_plan": force_plan,
-                }
-                st.rerun()
+                if st.button("Step 1 — Generate Plans", type="primary", key="docx_plan", disabled=_busy):
+                    st.session_state.running       = True
+                    st.session_state.pending       = "docx_plan"
+                    st.session_state.pending_params = {
+                        "grade": staging.grade, "module": module_arg, "topic": topic_arg,
+                        "force_parse": force_parse, "force_plan": force_plan,
+                    }
+                    st.rerun()
 
-    # ── Plan review ───────────────────────────────────────────────────────────
-    if st.session_state.docx_phase == "plan_ready":
-        g = st.session_state.docx_last_grade
-        m = st.session_state.docx_last_module
-        t = st.session_state.docx_last_topic
-        st.divider()
-        st.subheader("Step 2 — Review Plans")
-        plans = list_plans(PROJECT_ROOT, g, m, t)
-        if not plans:
-            st.warning("No plans found on disk. Try generating again.")
-        else:
-            st.success(f"{len(plans)} plan(s) ready for review.")
-            for label, pg, pm, pt, plan_path in plans:
-                with st.expander(label, expanded=True):
-                    st.markdown(plan_path.read_text(encoding="utf-8"))
-                    if st.button("↺  Redo this plan", key=f"d_redo_{pg}_{pm}_{pt}", disabled=_busy):
-                        st.session_state.running        = True
-                        st.session_state.pending        = "redo_single_plan"
-                        st.session_state.pending_params = {"grade": pg, "module": pm, "topic": pt}
-                        st.rerun()
+        # ── Plan review ───────────────────────────────────────────────────────
+        if st.session_state.docx_phase == "plan_ready":
+            g = st.session_state.docx_last_grade
+            m = st.session_state.docx_last_module
+            t = st.session_state.docx_last_topic
+            st.divider()
+            st.subheader("Step 2 — Review Plans")
+            plans = list_plans(PROJECT_ROOT, g, m, t)
+            if not plans:
+                st.warning("No plans found on disk. Try generating again.")
+            else:
+                st.success(f"{len(plans)} plan(s) ready for review.")
+                for label, pg, pm, pt, plan_path in plans:
+                    with st.expander(label, expanded=True):
+                        st.markdown(plan_path.read_text(encoding="utf-8"))
+                        if st.button("↺  Redo this plan", key=f"d_redo_{pg}_{pm}_{pt}", disabled=_busy):
+                            st.session_state.running        = True
+                            st.session_state.pending        = "redo_single_plan"
+                            st.session_state.pending_params = {"grade": pg, "module": pm, "topic": pt}
+                            st.rerun()
 
-        col_approve, col_redo = st.columns(2)
-        with col_approve:
-            if g is None:
-                st.info("Upload files above and run Step 1 to enable prompt generation.")
-            elif st.button("✓  Plans look good — Generate Prompts", type="primary",
-                           key="docx_approve", disabled=_busy):
-                st.session_state.running       = True
-                st.session_state.pending       = "docx_approve"
-                st.session_state.pending_params = {
-                    "grade": g, "module": m, "topic": t,
-                    "force_prompt": st.session_state.get("d_fpr", False),
-                }
-                st.rerun()
-        with col_redo:
-            if g is not None and st.button("↺  Redo All Plans", key="docx_redo", disabled=_busy):
-                st.session_state.running       = True
-                st.session_state.pending       = "docx_redo"
-                st.session_state.pending_params = {"grade": g, "module": m, "topic": t}
-                st.rerun()
+            col_approve, col_redo = st.columns(2)
+            with col_approve:
+                if g is None:
+                    st.info("Upload files above and run Step 1 to enable prompt generation.")
+                elif st.button("✓  Plans look good — Generate Prompts", type="primary",
+                               key="docx_approve", disabled=_busy):
+                    st.session_state.running       = True
+                    st.session_state.pending       = "docx_approve"
+                    st.session_state.pending_params = {
+                        "grade": g, "module": m, "topic": t,
+                        "force_prompt": st.session_state.get("d_fpr", False),
+                    }
+                    st.rerun()
+            with col_redo:
+                if g is not None and st.button("↺  Redo All Plans", key="docx_redo", disabled=_busy):
+                    st.session_state.running       = True
+                    st.session_state.pending       = "docx_redo"
+                    st.session_state.pending_params = {"grade": g, "module": m, "topic": t}
+                    st.rerun()
 
 # ── BOOK WRITER MODE ──────────────────────────────────────────────────────────
 with book_tab:
@@ -300,9 +315,10 @@ with book_tab:
                 st.session_state.running       = True
                 st.session_state.pending       = "book_plan"
                 st.session_state.pending_params = {
-                    "paths":        [str(r.dest_path) for r in runnable],
-                    "force_adapt":  force_adapt_b,
-                    "force_plan":   force_plan_b,
+                    "paths":       [str(r.dest_path) for r in runnable],
+                    "force_adapt": force_adapt_b,
+                    "force_plan":  force_plan_b,
+                    "scope":       [(r.grade, r.module, r.topic) for r in runnable],
                 }
                 st.rerun()
 
@@ -310,7 +326,12 @@ with book_tab:
     if st.session_state.book_phase == "plan_ready":
         st.divider()
         st.subheader("Step 2 — Review Plans")
-        plans = list_plans(PROJECT_ROOT, grade=None, module=None, topic=None)
+        _scope = set(map(tuple, st.session_state.book_last_scope))
+        plans = [
+            (label, g, m, t, path)
+            for label, g, m, t, path in list_plans(PROJECT_ROOT, grade=None, module=None, topic=None)
+            if not _scope or (g, m, t) in _scope
+        ]
         if not plans:
             st.warning("No plans found on disk. Try generating again.")
         else:

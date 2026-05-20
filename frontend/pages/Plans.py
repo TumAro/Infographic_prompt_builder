@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 
@@ -45,7 +46,12 @@ st.divider()
 # ── Per-plan list ─────────────────────────────────────────────────────────────
 for label, pg, pm, pt, plan_path in visible:
     with st.expander(label, expanded=False):
-        st.markdown(plan_path.read_text(encoding="utf-8"))
+        raw = plan_path.read_text(encoding="utf-8").strip()
+        # Strip accidental code-fence wrapper the LLM sometimes adds
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[^\n]*\n", "", raw)
+            raw = re.sub(r"\n```$", "", raw)
+        st.markdown(raw)
 
         col_redo, col_gen = st.columns(2)
 

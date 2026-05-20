@@ -90,3 +90,17 @@ with st.expander("Advanced — LLM Config (llm_config.json)", expanded=False):
                 except json.JSONDecodeError as e:
                     print(f"[ERROR] llm_config.json save failed: {e}")
                     st.error(f"Invalid JSON — not saved. Fix the error and try again: {e}")
+
+# ── Feature Flags ─────────────────────────────────────────────────────────────
+st.subheader("Feature Flags")
+_feat_file = Path(__file__).parent.parent / "features.json"
+_feat = json.loads(_feat_file.read_text()) if _feat_file.exists() else {}
+docx_on = st.toggle(
+    "Enable DOCX Mode",
+    value=_feat.get("docx_mode", False),
+    help="Show the DOCX upload tab on the main pipeline page.",
+)
+if docx_on != _feat.get("docx_mode", False):
+    _feat["docx_mode"] = docx_on
+    _feat_file.write_text(json.dumps(_feat, indent=2))
+    st.success("Saved. Reload the pipeline page to apply.")
