@@ -144,7 +144,7 @@ def render_output_tree(project_root: Path) -> None:
     for display, path in visible:
         col_chk, col_label = st.columns([1, 11])
         with col_chk:
-            st.checkbox("", key=_ck(path), label_visibility="collapsed")
+            st.checkbox("Select", key=_ck(path), label_visibility="collapsed")
         with col_label:
             with st.expander(display):
                 st.code(path.read_text(encoding="utf-8"), language="json")

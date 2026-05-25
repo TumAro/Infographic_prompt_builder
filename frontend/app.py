@@ -25,6 +25,12 @@ from pipeline_runner import (
 from output_browser import list_plans
 
 st.set_page_config(page_title="Infographic Generator", layout="wide")
+
+st.markdown(
+    "<style>header {visibility: hidden;} footer {visibility: hidden;} [data-testid='stStatusWidget'] {visibility: visible;}</style>",
+    unsafe_allow_html=True,
+)
+
 st.title("Infographic Generator")
 st.caption("Converts textbook content into AI-ready infographic pages. No command line needed.")
 
@@ -197,7 +203,7 @@ if _DOCX_ENABLED:
             staging = stage_docx_files(uploaded_docx, PROJECT_ROOT)
 
             if staging.preview_rows:
-                st.dataframe(staging.preview_rows, use_container_width=True)
+                st.dataframe(staging.preview_rows, width='stretch')
 
             for err in staging.errors:
                 st.error(err)
@@ -302,7 +308,7 @@ with book_tab:
                 "Topic":  r.topic  if not r.error else "—",
                 "Status": r.error  if r.error     else "✓ Ready",
             })
-        st.dataframe(preview, use_container_width=True)
+        st.dataframe(preview, width='stretch')
 
         runnable = [r for r in book_results if not r.error]
         if not runnable:
