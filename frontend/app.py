@@ -165,9 +165,11 @@ _busy = st.session_state.running
 if msg := st.session_state.pop("app_success_msg", None):
     st.success(msg)
 
-# ── Sidebar: last pipeline log (for debugging) ────────────────────────────────
-if st.session_state.log_text:
-    with st.sidebar:
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    if "--settings" in sys.argv:
+        st.page_link("pages/_Settings.py", label="⚙️ Settings")
+    if st.session_state.log_text:
         with st.expander("Last pipeline log", expanded=False):
             st.code(st.session_state.log_text)
 

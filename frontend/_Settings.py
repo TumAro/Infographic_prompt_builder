@@ -10,6 +10,13 @@ import streamlit as st
 st.set_page_config(page_title="Settings", layout="wide")
 st.title("Settings")
 
+# ── Password gate ─────────────────────────────────────────────────────────────
+_pwd = st.text_input("Password", type="password", placeholder="Enter password to continue")
+if _pwd != "#Book2026":
+    st.stop()
+
+st.divider()
+
 st.error(
     "Changes to system prompts directly affect AI output quality. "
     "Incorrect edits may cause the pipeline to produce poor or broken results. "
